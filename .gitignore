@@ -1,0 +1,32 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+dist/
+*.egg-info/
+.DS_Store
+Thumbs.db
+*.tmp
+*.swp
+.vscode/
+.idea/
+*.log
+.env*
+
+# Agents and Specs (requested to be ignored from git commits)
+.agents/
+.specify/
+specs/
+AGENTS.md
+GEMINI.md
+
+# Datasets and local caches
+mock_dataset/
+liveness_dataset/
+notebooks/liveness_dataset/
+uploads/
+.pytest_cache/
+
+# Large model artifacts
+*.pt
+*.pkl

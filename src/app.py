@@ -97,6 +97,7 @@ if not st.session_state.applications:
         "name": "Alice Smith",
         "id_image": "alice_smith_card.jpg",
         "video": "alice_smith_live.mp4",
+        "expected_gesture": "2_fingers_near_eye",
         "created_at": "2026-06-13 14:23:10",
         "status": ApplicationStatus.PENDING,
         "pipeline_run": None
@@ -107,17 +108,41 @@ if not st.session_state.applications:
         "name": "Jane Doe",
         "id_image": "jane_doe_id.jpg",
         "video": "jane_doe_live.mp4",
+        "expected_gesture": "3_fingers_near_cheek",
         "created_at": "2026-06-13 15:10:45",
         "status": ApplicationStatus.PENDING,
         "pipeline_run": None
     }
-    # John Doe - High Risk Liveness Spoof
+    # John Doe - High Risk Liveness Spoof (Physical Spoof)
     st.session_state.applications["APP-1003"] = {
         "id": "APP-1003",
         "name": "John Doe",
         "id_image": "john_doe_card.png",
         "video": "john_doe_spoof.mp4",
+        "expected_gesture": "2_fingers_near_eye",
         "created_at": "2026-06-13 16:05:00",
+        "status": ApplicationStatus.PENDING,
+        "pipeline_run": None
+    }
+    # Bob Miller - Failed Gesture Challenge
+    st.session_state.applications["APP-1004"] = {
+        "id": "APP-1004",
+        "name": "Bob Miller",
+        "id_image": "bob_miller_card.jpg",
+        "video": "bob_miller_wrong_gesture.mp4",
+        "expected_gesture": "2_fingers_near_eye",
+        "created_at": "2026-06-14 09:12:00",
+        "status": ApplicationStatus.PENDING,
+        "pipeline_run": None
+    }
+    # Charlie Davis - Deepfake/AI Video Spoof
+    st.session_state.applications["APP-1005"] = {
+        "id": "APP-1005",
+        "name": "Charlie Davis",
+        "id_image": "charlie_davis_card.jpg",
+        "video": "charlie_davis_deepfake_spoof.mp4",
+        "expected_gesture": "1_finger_pointing_to_nose",
+        "created_at": "2026-06-14 09:15:00",
         "status": ApplicationStatus.PENDING,
         "pipeline_run": None
     }
@@ -150,6 +175,15 @@ new_id = f"APP-{1000 + len(st.session_state.applications) + 1}"
 uploaded_name = st.sidebar.text_input("Applicant Name", placeholder="e.g., Robert Vance")
 uploaded_id_img = st.sidebar.file_uploader("Upload ID Document (Image)", type=["jpg", "jpeg", "png"])
 uploaded_vid = st.sidebar.file_uploader("Upload Face Verification Video", type=["mp4"])
+uploaded_gesture = st.sidebar.selectbox(
+    "Onboarding Gesture Challenge",
+    options=[
+        "2_fingers_near_eye",
+        "3_fingers_near_cheek",
+        "1_finger_pointing_to_nose"
+    ],
+    format_func=lambda x: x.replace("_", " ").title()
+)
 
 if st.sidebar.button("Add to Queue"):
     if not uploaded_name:
@@ -171,6 +205,7 @@ if st.sidebar.button("Add to Queue"):
             "name": uploaded_name,
             "id_image": id_path,
             "video": vid_path,
+            "expected_gesture": uploaded_gesture,
             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "status": ApplicationStatus.PENDING,
             "pipeline_run": None
@@ -194,6 +229,17 @@ if st.session_state.selected_app_id:
     st.markdown(f"### Reviewing: **{app['name']}** (ID: `{app['id']}`)")
     st.caption(f"Created on: {app['created_at']} | Status: `{app['status'].value}`")
     
+    # Display the onboarding gesture challenge assigned to the applicant
+    st.markdown(f"""
+    <div style="background-color: rgba(79, 70, 229, 0.1); border-left: 5px solid #4f46e5; border-radius: 6px; padding: 1rem; margin-top: 1rem; margin-bottom: 1.5rem;">
+        <h4 style="margin: 0; color: #4f46e5; font-size: 1rem;">🎯 Required Onboarding Gesture Challenge</h4>
+        <p style="margin: 0.25rem 0 0 0; font-size: 1.15rem; font-weight: 600; color: #1e1b4b;">
+            {app.get('expected_gesture', '2_fingers_near_eye').replace('_', ' ').title()}
+        </p>
+        <small style="color: #6b7280;">Applicant must display this gesture near their face to pass the digital deepfake & spoof verification.</small>
+    </div>
+    """, unsafe_allow_html=True)
+    
     # Run pipeline button
     col1, col2 = st.columns([1, 4])
     with col1:
@@ -210,7 +256,8 @@ if st.session_state.selected_app_id:
             try:
                 ext_res, live_res, screen_res, risk_res = run_kyc_pipeline(
                     app["id_image"],
-                    app["video"]
+                    app["video"],
+                    app.get("expected_gesture", "2_fingers_near_eye")
                 )
                 app["pipeline_run"] = {
                     "extraction": ext_res,
@@ -277,9 +324,18 @@ if st.session_state.selected_app_id:
         with ag_col2:
             st.markdown("### 🎥 Liveness Agent")
             liveness_badge = "🟢 PASSED" if live.liveness_status == LivenessStatus.PASSED else "🔴 FAILED"
+            
+            # Sub-check status
+            physical_status = "❌ FAILED" if live.physical_spoof_detected else "✅ PASSED"
+            gesture_status = "✅ PASSED" if live.gestural_challenge_passed else "❌ FAILED"
+            deepfake_status = "❌ FAILED" if live.digital_deepfake_detected else "✅ PASSED"
+            
             st.markdown(f"""
             <div class="metric-card">
-                <p><strong>Liveness Status:</strong> {liveness_badge}</p>
+                <p><strong>Liveness Outcome:</strong> {liveness_badge}</p>
+                <p><strong>Physical Liveness:</strong> {physical_status}</p>
+                <p><strong>Gesture Verification:</strong> {gesture_status}</p>
+                <p><strong>Deepfake/AI Detection:</strong> {deepfake_status}</p>
                 <p><strong>Inference Confidence:</strong> {live.confidence * 100:.1f}%</p>
                 <p><strong>Spoof Probability:</strong> {live.spoof_probability * 100:.1f}%</p>
                 <p><strong>Security Flags:</strong> {', '.join(live.flags) if live.flags else 'None'}</p>

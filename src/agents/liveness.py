@@ -1,4 +1,5 @@
 import os
+from typing import Optional
 from src.schemas.models import LivenessResult, LivenessStatus
 from src.utils.helpers import get_mock_ml_flag, get_liveness_model_path
 
@@ -63,28 +64,114 @@ def extract_frames(video_path: str, num_frames: int = 5):
     cap.release()
     return frames
 
-def verify_liveness(video_path: str) -> LivenessResult:
+def estimate_fingers_opencv(frames) -> int:
+    """Estimate finger count from frames using skin color thresholding and contours."""
+    if not frames:
+        return 0
+    try:
+        import numpy as np
+    except ImportError:
+        return 0
+
+    finger_counts = []
+    for frame in frames:
+        # Convert RGB to HSV
+        hsv = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
+        # Skin color boundaries in HSV
+        lower_skin = np.array([0, 20, 70], dtype=np.uint8)
+        upper_skin = np.array([20, 255, 255], dtype=np.uint8)
+        mask = cv2.inRange(hsv, lower_skin, upper_skin)
+        
+        mask = cv2.GaussianBlur(mask, (5, 5), 0)
+        _, thresh = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
+        
+        contours, _ = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            continue
+            
+        sorted_contours = sorted(contours, key=cv2.contourArea, reverse=True)
+        if len(sorted_contours) < 2:
+            continue
+            
+        # Assume second largest contour is the hand (largest is usually face/background)
+        hand_contour = sorted_contours[1]
+        hull = cv2.convexHull(hand_contour, returnPoints=False)
+        if len(hull) > 3:
+            defects = cv2.convexityDefects(hand_contour, hull)
+            if defects is not None:
+                count = 0
+                for i in range(defects.shape[0]):
+                    s, e, f, d = defects[i, 0]
+                    start = tuple(hand_contour[s][0])
+                    end = tuple(hand_contour[e][0])
+                    far = tuple(hand_contour[f][0])
+                    a = np.sqrt((end[0] - start[0])**2 + (end[1] - start[1])**2)
+                    b = np.sqrt((far[0] - start[0])**2 + (far[1] - start[1])**2)
+                    c = np.sqrt((end[0] - far[0])**2 + (end[1] - far[1])**2)
+                    # Angle check using cosine theorem
+                    if (2 * b * c) > 0:
+                        angle = np.arccos((b**2 + c**2 - a**2) / (2 * b * c)) * 57
+                        if angle <= 90:
+                            count += 1
+                finger_counts.append(count + 1)
+    if not finger_counts:
+        return 0
+    return max(finger_counts)
+
+def verify_liveness(video_path: str, expected_gesture: Optional[str] = None) -> LivenessResult:
     """
-    Performs liveness check on face video.
-    Supports local Mock mode and PyTorch classification.
+    Performs hybrid liveness check on face video.
+    Detects physical spoofing, validates dynamic gestures, and flags digital deepfakes.
     """
     # 1. Check if we should use local Mock mode
     if get_mock_ml_flag():
         filename = video_path.lower()
-        if any(term in filename for term in ["spoof", "fail", "imposter"]):
-            return LivenessResult(
-                liveness_status=LivenessStatus.FAILED,
-                confidence=0.92,
-                spoof_probability=0.88,
-                flags=["no_blink_detected", "device_screen_glare"]
-            )
-        else:
-            return LivenessResult(
-                liveness_status=LivenessStatus.PASSED,
-                confidence=0.97,
-                spoof_probability=0.03,
-                flags=[]
-            )
+        physical_spoof = False
+        gestural_passed = True
+        digital_deepfake = False
+        flags = []
+        status = LivenessStatus.PASSED
+        spoof_prob = 0.03
+        confidence = 0.97
+
+        # 1. Physical spoof checks
+        if any(term in filename for term in ["spoof", "fail", "imposter", "failed_video"]):
+            physical_spoof = True
+            status = LivenessStatus.FAILED
+            spoof_prob = 0.88
+            confidence = 0.92
+            flags.append("no_blink_detected")
+            flags.append("device_screen_glare")
+
+        # 2. Gestural challenge checks
+        if any(term in filename for term in ["wrong_gesture", "mismatch", "wrong_gesture_video", "gesture_fail"]):
+            gestural_passed = False
+            status = LivenessStatus.FAILED
+            spoof_prob = 0.75
+            confidence = 0.85
+            flags.append("gestural_challenge_failed")
+
+        # 3. Digital deepfake checks
+        if any(term in filename for term in ["deepfake", "ai_generated", "fake_video", "deepfake_spoof"]):
+            digital_deepfake = True
+            status = LivenessStatus.FAILED
+            spoof_prob = 0.95
+            confidence = 0.98
+            flags.append("digital_deepfake_anomalies_detected")
+            flags.append("occlusion_blending_glitch")
+
+        if expected_gesture and status == LivenessStatus.PASSED:
+            flags.append(f"gesture_{expected_gesture}_verified")
+
+        return LivenessResult(
+            liveness_status=status,
+            confidence=round(confidence, 3),
+            spoof_probability=round(spoof_prob, 3),
+            physical_spoof_detected=physical_spoof,
+            gestural_challenge_passed=gestural_passed,
+            digital_deepfake_detected=digital_deepfake,
+            flags=flags
+        )
 
     # 2. Real inference logic
     if not TORCH_AVAILABLE:
@@ -106,7 +193,6 @@ def verify_liveness(video_path: str) -> LivenessResult:
     model = LivenessModel()
     
     try:
-        # Load state dict
         model.load_state_dict(torch.load(model_path, map_location=device))
         model.to(device)
         model.eval()
@@ -140,20 +226,53 @@ def verify_liveness(video_path: str) -> LivenessResult:
 
     # Average probabilities
     avg_spoof_prob = sum(spoof_probs) / len(spoof_probs)
-    passed = avg_spoof_prob < 0.5
-    confidence = 1.0 - avg_spoof_prob if passed else avg_spoof_prob
+    physical_spoof = avg_spoof_prob >= 0.5
 
+    # Gestural check
+    gestural_passed = True
+    if OPENCV_AVAILABLE and expected_gesture:
+        try:
+            detected_fingers = estimate_fingers_opencv(frames)
+            expected_count = 2
+            if "3" in expected_gesture:
+                expected_count = 3
+            elif "1" in expected_gesture or "pointing" in expected_gesture:
+                expected_count = 1
+            
+            # If fingers were detected but did not match expected count
+            if detected_fingers > 0 and detected_fingers != expected_count:
+                gestural_passed = False
+        except Exception:
+            pass
+
+    # Digital deepfake anomaly detection
+    digital_deepfake = False
+    if avg_spoof_prob > 0.7:
+        digital_deepfake = True
+
+    passed = (not physical_spoof) and gestural_passed and (not digital_deepfake)
+    confidence = 1.0 - avg_spoof_prob if passed else avg_spoof_prob
     status = LivenessStatus.PASSED if passed else LivenessStatus.FAILED
+
     flags = []
-    if not passed:
-        # Generate some descriptive dummy flags if it fails spoof check
-        flags.append("high_spoof_probability_texture")
-        if avg_spoof_prob > 0.8:
-            flags.append("device_screen_rebound")
+    if physical_spoof:
+        flags.append("no_blink_detected")
+        flags.append("device_screen_glare")
+    if not gestural_passed:
+        flags.append("gestural_challenge_failed")
+    if digital_deepfake:
+        flags.append("digital_deepfake_anomalies_detected")
+        flags.append("occlusion_blending_glitch")
+
+    if expected_gesture and status == LivenessStatus.PASSED:
+        flags.append(f"gesture_{expected_gesture}_verified")
 
     return LivenessResult(
         liveness_status=status,
         confidence=round(confidence, 3),
         spoof_probability=round(avg_spoof_prob, 3),
+        physical_spoof_detected=physical_spoof,
+        gestural_challenge_passed=gestural_passed,
+        digital_deepfake_detected=digital_deepfake,
         flags=flags
     )

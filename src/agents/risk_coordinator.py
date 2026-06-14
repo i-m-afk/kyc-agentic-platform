@@ -25,7 +25,17 @@ def coordinate_risk(
         # High penalty for failed liveness
         liveness_score = 50.0 + (liveness.spoof_probability * 30.0)
         score += liveness_score
-        factors.append(f"Liveness check failed (spoof probability: {liveness.spoof_probability})")
+        
+        # Add specific factors based on the detailed spoof detections
+        if liveness.physical_spoof_detected:
+            factors.append("Physical spoof detected (printed photo or screen replay)")
+        if not liveness.gestural_challenge_passed:
+            factors.append("Gestural challenge mismatch (incorrect finger/hand action)")
+        if liveness.digital_deepfake_detected:
+            factors.append("Digital deepfake/AI video anomalies detected")
+            
+        if not (liveness.physical_spoof_detected or not liveness.gestural_challenge_passed or liveness.digital_deepfake_detected):
+            factors.append(f"Liveness check failed (spoof probability: {liveness.spoof_probability})")
     else:
         # Small contribution for low confidence liveness
         if liveness.spoof_probability > 0.15:

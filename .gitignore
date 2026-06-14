@@ -30,3 +30,5 @@ uploads/
 # Large model artifacts
 *.pt
 *.pkl
+*.zip
+

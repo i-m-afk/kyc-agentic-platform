@@ -60,6 +60,9 @@ class LivenessResult(BaseModel):
     liveness_status: LivenessStatus
     confidence: float = Field(..., ge=0.0, le=1.0)
     spoof_probability: float = Field(..., ge=0.0, le=1.0)
+    physical_spoof_detected: bool = False
+    gestural_challenge_passed: bool = True
+    digital_deepfake_detected: bool = False
     flags: List[str] = Field(default_factory=list)
 
 class ScreeningResult(BaseModel):

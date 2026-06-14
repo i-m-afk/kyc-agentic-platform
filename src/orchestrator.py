@@ -1,6 +1,6 @@
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Tuple, Dict, Any
+from typing import Tuple, Dict, Any, Optional
 
 from src.schemas.models import (
     ExtractionResult,
@@ -16,7 +16,8 @@ from src.utils.helpers import create_audit_entry, get_mock_ml_flag
 
 def run_kyc_pipeline(
     id_image_path: str,
-    liveness_video_path: str
+    liveness_video_path: str,
+    expected_gesture: Optional[str] = None
 ) -> Tuple[ExtractionResult, LivenessResult, ScreeningResult, ConsolidatedRiskReport]:
     """
     Coordinates the KYC processing pipeline:
@@ -32,7 +33,7 @@ def run_kyc_pipeline(
     
     with ThreadPoolExecutor(max_workers=2) as executor:
         extraction_future = executor.submit(extract_document_info, id_image_path)
-        liveness_future = executor.submit(verify_liveness, liveness_video_path)
+        liveness_future = executor.submit(verify_liveness, liveness_video_path, expected_gesture)
         
         try:
             extraction_res = extraction_future.result()

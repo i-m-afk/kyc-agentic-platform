@@ -141,7 +141,7 @@ def extract_document_info(image_path: str) -> ExtractionResult:
     }
 
     try:
-        response = httpx.post(f"{api_url}/chat/completions", json=payload, headers=headers, timeout=30.0)
+        response = httpx.post(f"{api_url}/chat/completions", json=payload, headers=headers, timeout=180.0)
         response.raise_for_status()
         result_json = response.json()
         content = result_json["choices"][0]["message"]["content"].strip()

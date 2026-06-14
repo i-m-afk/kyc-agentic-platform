@@ -73,14 +73,14 @@ def run_kyc_pipeline(
     # 2. Watchlist & Media Screening (depends on extracted name)
     start_screening = time.time()
     try:
-        screening_res = screen_identity(extraction_res)
+        screening_res = screen_identity(extraction_res, applicant_name)
         screening_latency = time.time() - start_screening
         audit_log["ScreenerAgent"] = create_audit_entry(
             "ScreenerAgent",
             "SUCCESS",
             screening_latency,
             "mock_database_matcher",
-            {"query_name": extraction_res.name}
+            {"query_extracted_name": extraction_res.name, "query_submitted_name": applicant_name}
         )
     except Exception as e:
         screening_latency = time.time() - start_screening

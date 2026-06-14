@@ -1,3 +1,4 @@
+from typing import Optional
 from src.schemas.models import (
     ScreeningResult,
     RiskLevel,
@@ -7,34 +8,50 @@ from src.schemas.models import (
 )
 from src.utils.db import search_watchlist, search_adverse_media
 
-def screen_applicant(extracted_info: ExtractionResult) -> ScreeningResult:
+def screen_applicant(extracted_info: ExtractionResult, applicant_name: Optional[str] = None) -> ScreeningResult:
     """
     Screens candidate's name against PEP/Sanction watchlists and adverse media databases.
     Categorizes the risk level as LOW, MEDIUM, or HIGH.
     """
-    name = extracted_info.name
-    watchlist_raw = search_watchlist(name)
-    adverse_media_raw = search_adverse_media(name)
+    extracted_name = extracted_info.name
+    query_names = []
     
-    watchlist_hits = [
-        WatchlistHit(
-            name=h["name"],
-            list_name=h["list_name"],
-            reason=h["reason"],
-            match_score=h["match_score"]
-        )
-        for h in watchlist_raw
-    ]
+    # 1. Screen the extracted name from the ID card
+    if extracted_name:
+        query_names.append((extracted_name, "extracted_name"))
+        
+    # 2. Also screen the submitted applicant name if it's different
+    if applicant_name and applicant_name.lower().strip() != extracted_name.lower().strip():
+        query_names.append((applicant_name, "submitted_name"))
     
-    adverse_media_hits = [
-        AdverseMediaHit(
-            title=h["title"],
-            source=h["source"],
-            sentiment=h["sentiment"],
-            url=h.get("url")
-        )
-        for h in adverse_media_raw
-    ]
+    watchlist_hits = []
+    adverse_media_hits = []
+    
+    for name, matched_on in query_names:
+        watchlist_raw = search_watchlist(name)
+        adverse_media_raw = search_adverse_media(name)
+        
+        for h in watchlist_raw:
+            watchlist_hits.append(
+                WatchlistHit(
+                    name=h["name"],
+                    list_name=h["list_name"],
+                    reason=h["reason"],
+                    match_score=h["match_score"],
+                    matched_on=matched_on
+                )
+            )
+            
+        for h in adverse_media_raw:
+            adverse_media_hits.append(
+                AdverseMediaHit(
+                    title=h["title"],
+                    source=h["source"],
+                    sentiment=h["sentiment"],
+                    url=h.get("url"),
+                    matched_on=matched_on
+                )
+            )
     
     match_found = len(watchlist_hits) > 0 or len(adverse_media_hits) > 0
     

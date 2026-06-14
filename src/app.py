@@ -404,11 +404,13 @@ if st.session_state.selected_app_id:
             if screen.watchlist_hits:
                 st.markdown("**Watchlist Matches:**")
                 for hit in screen.watchlist_hits:
-                    st.error(f"⚠️ **{hit.list_name}**: {hit.reason} (Match Score: {hit.match_score * 100:.1f}%)")
+                    matched_lbl = "ID Document" if hit.matched_on == "extracted_name" else "submitted name"
+                    st.error(f"⚠️ **{hit.list_name}**: {hit.reason} (Match Score: {hit.match_score * 100:.1f}% | Matched on {matched_lbl}: {hit.name})")
             if screen.adverse_media_hits:
                 st.markdown("**Adverse Media Hits:**")
                 for hit in screen.adverse_media_hits:
-                    st.warning(f"📰 **{hit.source}**: *{hit.title}* ({hit.sentiment})")
+                    matched_lbl = "ID Document" if hit.matched_on == "extracted_name" else "submitted name"
+                    st.warning(f"📰 **{hit.source}**: *{hit.title}* ({hit.sentiment} | Matched on {matched_lbl})")
                     if hit.url:
                         st.caption(f"[Link to Article]({hit.url})")
                         

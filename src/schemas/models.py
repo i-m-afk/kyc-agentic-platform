@@ -22,12 +22,14 @@ class WatchlistHit(BaseModel):
     list_name: str
     reason: str
     match_score: float
+    matched_on: Optional[str] = "submitted_name"
 
 class AdverseMediaHit(BaseModel):
     title: str
     source: str
     sentiment: str
     url: Optional[str] = None
+    matched_on: Optional[str] = "submitted_name"
 
 class OnboardingApplication(BaseModel):
     id: str

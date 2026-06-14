@@ -66,10 +66,59 @@ MOCK_ML=false PYTHONPATH=. streamlit run src/app.py --server.port 8501 --server.
 
 The pipeline uses a functional, stateless multi-agent topology to avoid state-machine overhead and maintain deterministic execution:
 
-1.  **Extraction Agent**: Vision-Language Model serving via **vLLM** ➔ Extracts ID document metadata (Name, DOB, ID Number) as structured Pydantic models.
-2.  **Liveness Agent**: PyTorch Binary Classifier ➔ Analyzes the face video to detect presentation attacks (photos, replays, deepfakes).
-3.  **Screener Agent**: Compliance engine ➔ Cross-matches extracted details against local mock watchlists, PEP lists, and adverse media.
-4.  **Risk Coordinator Agent**: Aggregator ➔ Combines all agent signals, calculates a consolidated risk score (0-100), and generates a natural language explanation.
+1.  **Extraction Agent (Vision-Language)**:
+    * Hosts **Qwen2-VL-7B-Instruct** using an optimized **vLLM** endpoint on ROCm.
+    * Extracts document data (Name, DOB, ID Number) into Pydantic models.
+    * Performs **Zero-Shot Digital Forgery & AI Generation Checks** (evaluating text alignments, font anomalies, warping, and texture discrepancies).
+2.  **Liveness Agent (Anti-Spoofing)**:
+    * Executes a custom-trained **MobileNetV3 PyTorch Classifier** on AMD GPU hardware.
+    * Runs physical spoof detection, device-glare analysis, and deepfake anomaly identification on video frames.
+    * Validates user compliance against randomized gestural challenges (e.g. "3 fingers near cheek").
+3.  **Screener Agent (Compliance)**:
+    * Performs multi-target watchlist (PEP / Sanctions) and Adverse Media matches.
+    * Screens **both** the submitted applicant name AND the extracted ID card name if they differ.
+    * Tags every hit with a `matched_on` attribute (`submitted_name` or `extracted_name`) for audit transparency.
+4.  **Risk Coordinator Agent (Consolidator)**:
+    * Combines all outputs in a single consensus calculation.
+    * Runs **Fuzzy Name Similarity Matching** (using sequence matching ratio) between the user-inputted name and the ID document name.
+    * Assigns explainable risk flags, calculates the consolidated 0-100 score, and decides the application status (LOW/MEDIUM/HIGH).
+
+### Architecture Data Flow
+
+```mermaid
+graph TD
+    %% Inputs
+    Start([KYC Onboarding Request]) --> InputDoc[ID Card Image]
+    Start --> InputVid[Liveness Video]
+
+    %% Parallel Processing
+    subgraph Parallel ML Inference (ROCm Optimized)
+        InputDoc --> AgentExt[📄 Extraction Agent <br/> Qwen2-VL via vLLM]
+        InputVid --> AgentLive[🎥 Liveness Agent <br/> PyTorch MobileNetV3]
+    end
+
+    %% Agent Outputs
+    AgentExt --> ExtRes["Extraction Result<br/>- Name, DOB, ID Num<br/>- Forgery/AI Check"]
+    AgentLive --> LiveRes["Liveness Result<br/>- Physical Spoof<br/>- Gestural Challenge<br/>- Deepfake Anomalies"]
+
+    %% Screening
+    ExtRes --> AgentScreen[🔍 Screening Agent]
+    Start -.-> |"Submitted Name"| AgentScreen
+    
+    %% Screening Output
+    AgentScreen --> ScreenRes["Screening Result<br/>- Hits tagged with 'matched_on'<br/>- Risk Level"]
+
+    %% Consolidation
+    ExtRes --> AgentRisk[🛡️ Risk Coordinator Agent]
+    LiveRes --> AgentRisk
+    ScreenRes --> AgentRisk
+    Start -.-> |"Submitted Name"| AgentRisk
+
+    %% Decision
+    AgentRisk --> Report[Consolidated Risk Report]
+    Report --> Score["Risk Score (0-100)<br/>& Risk Level (L/M/H)"]
+    Report --> Explanation["Explainable Factors<br/>(e.g., Name Mismatch, Spoof Detected)"]
+```
 
 ---
 

@@ -99,6 +99,17 @@ def extract_document_info(image_path: str) -> ExtractionResult:
     api_url = get_vllm_api_url()
     headers = {"Content-Type": "application/json"}
     
+    # Resolve active model name dynamically from vLLM model listing
+    model_name = "Qwen/Qwen2-VL-7B-Instruct"
+    try:
+        models_resp = httpx.get(f"{api_url}/models", timeout=5.0)
+        if models_resp.status_code == 200:
+            models_data = models_resp.json()
+            if "data" in models_data and len(models_data["data"]) > 0:
+                model_name = models_data["data"][0]["id"]
+    except Exception:
+        pass
+
     prompt = (
         "Extract the following fields from this ID card image: "
         "1. name (full name as string) "
@@ -110,7 +121,7 @@ def extract_document_info(image_path: str) -> ExtractionResult:
     )
 
     payload = {
-        "model": "qwen2-vl",
+        "model": model_name,
         "messages": [
             {
                 "role": "user",

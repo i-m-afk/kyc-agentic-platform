@@ -173,8 +173,34 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("### ➕ Create New Application")
 new_id = f"APP-{1000 + len(st.session_state.applications) + 1}"
 uploaded_name = st.sidebar.text_input("Applicant Name", placeholder="e.g., Robert Vance")
-uploaded_id_img = st.sidebar.file_uploader("Upload ID Document (Image)", type=["jpg", "jpeg", "png"])
-uploaded_vid = st.sidebar.file_uploader("Upload Face Verification Video", type=["mp4"])
+
+# Scan uploads directory for files uploaded via JupyterLab file browser
+local_files = ["-- Select --"]
+if os.path.exists("uploads"):
+    local_files += sorted([f for f in os.listdir("uploads") if os.path.isfile(os.path.join("uploads", f))])
+
+st.sidebar.markdown("**ID Document (Image)**")
+id_mode = st.sidebar.radio("ID Input Mode", ["Upload File", "Choose from uploads/ folder"], key="id_mode")
+uploaded_id_img = None
+selected_id_path = None
+if id_mode == "Upload File":
+    uploaded_id_img = st.sidebar.file_uploader("Upload ID Document", type=["jpg", "jpeg", "png"], key="id_upload")
+else:
+    selected_id_file = st.sidebar.selectbox("Choose ID File", options=local_files, key="sel_id")
+    if selected_id_file != "-- Select --":
+        selected_id_path = os.path.join("uploads", selected_id_file)
+
+st.sidebar.markdown("**Face Verification Video**")
+vid_mode = st.sidebar.radio("Video Input Mode", ["Upload File", "Choose from uploads/ folder"], key="vid_mode")
+uploaded_vid = None
+selected_vid_path = None
+if vid_mode == "Upload File":
+    uploaded_vid = st.sidebar.file_uploader("Upload Face Verification Video", type=["mp4"], key="vid_upload")
+else:
+    selected_vid_file = st.sidebar.selectbox("Choose Video File", options=local_files, key="sel_vid")
+    if selected_vid_file != "-- Select --":
+        selected_vid_path = os.path.join("uploads", selected_vid_file)
+
 uploaded_gesture = st.sidebar.selectbox(
     "Onboarding Gesture Challenge",
     options=[
@@ -186,19 +212,28 @@ uploaded_gesture = st.sidebar.selectbox(
 )
 
 if st.sidebar.button("Add to Queue"):
+    has_id = (id_mode == "Upload File" and uploaded_id_img is not None) or (id_mode == "Choose from uploads/ folder" and selected_id_path is not None)
+    has_vid = (vid_mode == "Upload File" and uploaded_vid is not None) or (vid_mode == "Choose from uploads/ folder" and selected_vid_path is not None)
+    
     if not uploaded_name:
         st.sidebar.error("Please enter applicant name.")
-    elif not uploaded_id_img or not uploaded_vid:
-        st.sidebar.error("Please upload both ID document and video.")
+    elif not has_id or not has_vid:
+        st.sidebar.error("Please provide both ID document and video using the selected modes.")
     else:
-        # Save uploads
-        id_path = os.path.join("uploads", f"{new_id}_id_{uploaded_id_img.name}")
-        vid_path = os.path.join("uploads", f"{new_id}_vid_{uploaded_vid.name}")
-        
-        with open(id_path, "wb") as f:
-            f.write(uploaded_id_img.read())
-        with open(vid_path, "wb") as f:
-            f.write(uploaded_vid.read())
+        # Resolve paths
+        if id_mode == "Upload File":
+            id_path = os.path.join("uploads", f"{new_id}_id_{uploaded_id_img.name}")
+            with open(id_path, "wb") as f:
+                f.write(uploaded_id_img.read())
+        else:
+            id_path = selected_id_path
+
+        if vid_mode == "Upload File":
+            vid_path = os.path.join("uploads", f"{new_id}_vid_{uploaded_vid.name}")
+            with open(vid_path, "wb") as f:
+                f.write(uploaded_vid.read())
+        else:
+            vid_path = selected_vid_path
             
         st.session_state.applications[new_id] = {
             "id": new_id,

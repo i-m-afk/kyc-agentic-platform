@@ -6,6 +6,62 @@ The platform ingests a user's ID card image and a 3-second liveness face video, 
 
 ---
 
+## 🚀 Beginner Quick Start (This Session)
+
+If you are setting up or running the project for the first time, follow this step-by-step guide.
+
+### Step 1: Clone the Repository
+Clone the repository using the pre-authenticated GitHub Personal Access Token (PAT):
+```bash
+git clone https://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@github.com/i-m-afk/kyc-agentic-platform.git
+cd kyc-agentic-platform
+```
+
+### Step 2: Environment Setup
+Create a virtual environment and install all dependencies:
+```bash
+# Create python venv
+python3 -m venv venv
+
+# Activate venv
+source venv/bin/activate
+
+# Install requirements
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+### Step 3: Model Weights (Liveness & Vision)
+* **Liveness Model (`liveness_model.pt`)**: The trained liveness classification model is already saved in the repository root. **You do not need to retrain it** unless you explicitly want to.
+  * *Optional training*: If you want to retrain the model, run the Jupyter notebook `notebooks/train_liveness_model.ipynb` or run:
+    ```bash
+    python3 src/training/train_liveness.py
+    ```
+* **Extraction Model (Qwen2-VL)**: Start the OpenAI-compatible vLLM server to host the Vision model:
+  ```bash
+  source venv/bin/activate
+  python3 -m vllm.entrypoints.openai.api_server \
+      --model Qwen/Qwen2-VL-7B-Instruct \
+      --port 8000 \
+      --trust-remote-code \
+      --dtype bfloat16
+  ```
+  *(Wait ~60 seconds for the vLLM server to log `Uvicorn running on http://localhost:8000` before running the pipeline).*
+
+### Step 4: Run the Streamlit Dashboard
+Start the dashboard in **production mode** (utilizing the real vLLM and PyTorch models instead of mock rules):
+```bash
+# Set MOCK_ML to false to enable real model execution
+MOCK_ML=false PYTHONPATH=. streamlit run src/app.py --server.port 8501 --server.address 0.0.0.0
+```
+
+### Step 5: Accessing the Dashboard & Running App
+1. Access the UI via your browser (e.g. replacing `/lab` with `/proxy/8501/` in your Jupyter URL).
+2. Because of Streamlit's file uploader proxy limitations, **do not upload files directly**. Instead, select the preloaded files from the **"Choose from uploads/ folder"** dropdown in the sidebar!
+3. Select an applicant (e.g., `Rishav Kumar` or `Charlie Davis`) and click **Run KYC Pipeline** to trigger real-time AI document extraction, deepfake/liveness check, and screening!
+
+---
+
 ## 1. Agent Topology & Architecture
 
 The pipeline uses a functional, stateless multi-agent topology to avoid state-machine overhead and maintain deterministic execution:

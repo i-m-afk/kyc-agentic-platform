@@ -31,7 +31,10 @@ def get_vllm_api_url() -> str:
     return get_config("VLLM_API_URL", "http://localhost:8000/v1")
 
 def get_liveness_model_path() -> str:
-    return get_config("LIVENESS_MODEL_PATH", "notebooks/liveness_model.pt")
+    path = get_config("LIVENESS_MODEL_PATH", "notebooks/liveness_model.pt")
+    if not os.path.exists(path) and os.path.exists("liveness_model.pt"):
+        return "liveness_model.pt"
+    return path
 
 def create_audit_entry(agent_name: str, status: str, latency: float, model: str, details: Dict[str, Any] = None) -> Dict[str, Any]:
     return {

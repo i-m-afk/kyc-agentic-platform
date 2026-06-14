@@ -41,6 +41,9 @@ class ExtractionResult(BaseModel):
     dob: date
     id_number: str = Field(..., min_length=1)
     confidence: float = Field(..., ge=0.0, le=1.0)
+    ai_generated_check: Optional[str] = "CLEAN"  # "CLEAN", "SUSPICIOUS", "AI_GENERATED"
+    forgery_detected: Optional[bool] = False
+    forgery_reason: Optional[str] = ""
 
     @field_validator("dob")
     @classmethod

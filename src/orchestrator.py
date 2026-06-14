@@ -17,7 +17,8 @@ from src.utils.helpers import create_audit_entry, get_mock_ml_flag
 def run_kyc_pipeline(
     id_image_path: str,
     liveness_video_path: str,
-    expected_gesture: Optional[str] = None
+    expected_gesture: Optional[str] = None,
+    applicant_name: Optional[str] = None
 ) -> Tuple[ExtractionResult, LivenessResult, ScreeningResult, ConsolidatedRiskReport]:
     """
     Coordinates the KYC processing pipeline:
@@ -91,7 +92,7 @@ def run_kyc_pipeline(
     # 3. Risk Coordination
     start_coordinator = time.time()
     try:
-        risk_report = coordinate_risk(extraction_res, liveness_res, screening_res, audit_log)
+        risk_report = coordinate_risk(extraction_res, liveness_res, screening_res, audit_log, applicant_name)
         coordinator_latency = time.time() - start_coordinator
         audit_log["RiskCoordinatorAgent"] = create_audit_entry(
             "RiskCoordinatorAgent",

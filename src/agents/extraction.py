@@ -18,28 +18,60 @@ def extract_document_info(image_path: str) -> ExtractionResult:
                 name="Jane Doe",
                 dob=date(1990, 5, 15),
                 id_number="JD9900515",
-                confidence=0.98
+                confidence=0.98,
+                ai_generated_check="CLEAN",
+                forgery_detected=False,
+                forgery_reason=""
             )
         elif "john" in filename:
             return ExtractionResult(
                 name="John Doe",
                 dob=date(1985, 11, 23),
                 id_number="JD851123X",
-                confidence=0.99
+                confidence=0.99,
+                ai_generated_check="CLEAN",
+                forgery_detected=False,
+                forgery_reason=""
             )
         elif "robert" in filename:
             return ExtractionResult(
                 name="Robert Vance",
                 dob=date(1978, 2, 14),
                 id_number="RV780214",
-                confidence=0.95
+                confidence=0.95,
+                ai_generated_check="CLEAN",
+                forgery_detected=False,
+                forgery_reason=""
+            )
+        elif "charlie" in filename:
+            return ExtractionResult(
+                name="Charlie Davis",
+                dob=date(1988, 7, 4),
+                id_number="CD880704",
+                confidence=0.96,
+                ai_generated_check="SUSPICIOUS",
+                forgery_detected=True,
+                forgery_reason="Inconsistent text alignment and background noise around fields"
+            )
+        elif "bob" in filename:
+            return ExtractionResult(
+                name="Bob Miller",
+                dob=date(1982, 9, 12),
+                id_number="BM820912",
+                confidence=0.97,
+                ai_generated_check="CLEAN",
+                forgery_detected=False,
+                forgery_reason=""
             )
         else:
             return ExtractionResult(
                 name="Alice Smith",
                 dob=date(1995, 8, 30),
                 id_number="AS950830",
-                confidence=0.90
+                confidence=0.90,
+                ai_generated_check="CLEAN",
+                forgery_detected=False,
+                forgery_reason=""
             )
 
     # 2. Actual vLLM Vision inference
@@ -55,42 +87,60 @@ def extract_document_info(image_path: str) -> ExtractionResult:
                     name="Jane Doe",
                     dob=date(1990, 5, 15),
                     id_number="JD9900515",
-                    confidence=0.98
+                    confidence=0.98,
+                    ai_generated_check="CLEAN",
+                    forgery_detected=False,
+                    forgery_reason=""
                 )
             elif "john" in filename:
                 return ExtractionResult(
                     name="John Doe",
                     dob=date(1985, 11, 23),
                     id_number="JD851123X",
-                    confidence=0.99
+                    confidence=0.99,
+                    ai_generated_check="CLEAN",
+                    forgery_detected=False,
+                    forgery_reason=""
                 )
             elif "robert" in filename:
                 return ExtractionResult(
                     name="Robert Vance",
                     dob=date(1978, 2, 14),
                     id_number="RV780214",
-                    confidence=0.95
+                    confidence=0.95,
+                    ai_generated_check="CLEAN",
+                    forgery_detected=False,
+                    forgery_reason=""
                 )
             elif "charlie" in filename:
                 return ExtractionResult(
                     name="Charlie Davis",
                     dob=date(1988, 7, 4),
                     id_number="CD880704",
-                    confidence=0.96
+                    confidence=0.96,
+                    ai_generated_check="SUSPICIOUS",
+                    forgery_detected=True,
+                    forgery_reason="Inconsistent text alignment and background noise around fields"
                 )
             elif "bob" in filename:
                 return ExtractionResult(
                     name="Bob Miller",
                     dob=date(1982, 9, 12),
                     id_number="BM820912",
-                    confidence=0.97
+                    confidence=0.97,
+                    ai_generated_check="CLEAN",
+                    forgery_detected=False,
+                    forgery_reason=""
                 )
             else:
                 return ExtractionResult(
                     name="Alice Smith",
                     dob=date(1995, 8, 30),
                     id_number="AS950830",
-                    confidence=0.90
+                    confidence=0.90,
+                    ai_generated_check="CLEAN",
+                    forgery_detected=False,
+                    forgery_reason=""
                 )
         raise ValueError(f"Failed to read image file for document extraction: [Errno 2] No such file or directory: '{image_path}'")
     except Exception as e:
@@ -115,8 +165,11 @@ def extract_document_info(image_path: str) -> ExtractionResult:
         "1. name (full name as string) "
         "2. dob (date of birth in YYYY-MM-DD format) "
         "3. id_number (document reference number) "
+        "4. ai_generated_check (Evaluate if this ID image shows signs of AI generation, digital manipulation, or photo editing. Return 'CLEAN', 'SUSPICIOUS', or 'AI_GENERATED') "
+        "5. forgery_detected (boolean, true if there are visible edits, inconsistent fonts, or AI generation anomalies) "
+        "6. forgery_reason (string detailing any anomalies found, or empty string if clean) "
         "Return ONLY a valid JSON object matching the schema: "
-        '{"name": "...", "dob": "YYYY-MM-DD", "id_number": "...", "confidence": 0.95}. '
+        '{"name": "...", "dob": "YYYY-MM-DD", "id_number": "...", "confidence": 0.95, "ai_generated_check": "...", "forgery_detected": false, "forgery_reason": "..."}. '
         "Do not include any markdown fences or additional explanation."
     )
 
@@ -137,7 +190,7 @@ def extract_document_info(image_path: str) -> ExtractionResult:
             }
         ],
         "temperature": 0.0,
-        "max_tokens": 300
+        "max_tokens": 400
     }
 
     try:
@@ -159,7 +212,10 @@ def extract_document_info(image_path: str) -> ExtractionResult:
             name=data["name"],
             dob=date(dob_parts[0], dob_parts[1], dob_parts[2]),
             id_number=data["id_number"],
-            confidence=data.get("confidence", 0.90)
+            confidence=data.get("confidence", 0.90),
+            ai_generated_check=data.get("ai_generated_check", "CLEAN"),
+            forgery_detected=data.get("forgery_detected", False),
+            forgery_reason=data.get("forgery_reason", "")
         )
     except Exception as e:
         raise RuntimeError(f"vLLM Document Extraction failed: {str(e)}")

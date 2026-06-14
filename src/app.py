@@ -292,7 +292,8 @@ if st.session_state.selected_app_id:
                 ext_res, live_res, screen_res, risk_res = run_kyc_pipeline(
                     app["id_image"],
                     app["video"],
-                    app.get("expected_gesture", "2_fingers_near_eye")
+                    app.get("expected_gesture", "2_fingers_near_eye"),
+                    app["name"]
                 )
                 app["pipeline_run"] = {
                     "extraction": ext_res,
@@ -336,12 +337,24 @@ if st.session_state.selected_app_id:
         
         with ag_col1:
             st.markdown("### 📄 Extraction Agent")
+            
+            ai_check_badge = "✅ CLEAN"
+            if ext.ai_generated_check == "AI_GENERATED":
+                ai_check_badge = "🚨 AI GENERATED"
+            elif ext.ai_generated_check == "SUSPICIOUS":
+                ai_check_badge = "⚠️ SUSPICIOUS"
+
+            forgery_badge = "🚨 FORGERY DETECTED" if ext.forgery_detected else "✅ VERIFIED GENUINE"
+
             st.markdown(f"""
             <div class="metric-card">
                 <p><strong>Extracted Name:</strong> {ext.name}</p>
                 <p><strong>DOB:</strong> {ext.dob}</p>
                 <p><strong>ID Number:</strong> <code>{ext.id_number}</code></p>
                 <p><strong>Extraction Confidence:</strong> {ext.confidence * 100:.1f}%</p>
+                <p><strong>Doc Authenticity:</strong> {forgery_badge}</p>
+                <p><strong>AI Generation Check:</strong> {ai_check_badge}</p>
+                {"<p style='color: #ef4444; font-size: 0.85rem; margin-top: 0.5rem; margin-bottom: 0;'><strong>Reason:</strong> " + ext.forgery_reason + "</p>" if ext.forgery_detected else ""}
             </div>
             """, unsafe_allow_html=True)
             

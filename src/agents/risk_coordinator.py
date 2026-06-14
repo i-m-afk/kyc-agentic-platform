@@ -1,3 +1,4 @@
+from typing import Optional
 from src.schemas.models import (
     ExtractionResult,
     LivenessResult,
@@ -11,7 +12,8 @@ def coordinate_risk(
     extraction: ExtractionResult,
     liveness: LivenessResult,
     screening: ScreeningResult,
-    audit_log: dict
+    audit_log: dict,
+    applicant_name: Optional[str] = None
 ) -> ConsolidatedRiskReport:
     """
     Consolidates the outputs of the Extraction, Liveness, and Screener agents
@@ -56,11 +58,31 @@ def coordinate_risk(
         score += 15.0
         factors.append(f"Low document extraction confidence: {extraction.confidence}")
 
+    # 4. Identity & Name Matching Risk (Fuzzy matching)
+    if applicant_name and extraction.name:
+        from difflib import SequenceMatcher
+        name1 = applicant_name.lower().strip()
+        name2 = extraction.name.lower().strip()
+        match_ratio = SequenceMatcher(None, name1, name2).ratio()
+        if match_ratio < 0.80:
+            score += 45.0
+            factors.append(f"Identity mismatch: Submitted name '{applicant_name}' does not match ID name '{extraction.name}' (Match: {match_ratio*100:.1f}%)")
+
+    # 5. AI Generation & Digital Forgery Risk
+    if extraction.forgery_detected or extraction.ai_generated_check in ("SUSPICIOUS", "AI_GENERATED"):
+        score += 50.0
+        reason = extraction.forgery_reason or "Suspicious textures or inconsistent fonts detected"
+        factors.append(f"AI generation/forgery detected on ID image: {reason}")
+
     # Clamp score
     final_score = min(max(int(score), 0), 100)
 
     # Determine risk level
-    if final_score >= 70 or liveness.liveness_status == LivenessStatus.FAILED or screening.risk_level == RiskLevel.HIGH:
+    if (final_score >= 70 or 
+        liveness.liveness_status == LivenessStatus.FAILED or 
+        screening.risk_level == RiskLevel.HIGH or 
+        extraction.forgery_detected or
+        (applicant_name and extraction.name and SequenceMatcher(None, applicant_name.lower().strip(), extraction.name.lower().strip()).ratio() < 0.5)):
         final_level = RiskLevel.HIGH
     elif final_score >= 35 or screening.risk_level == RiskLevel.MEDIUM:
         final_level = RiskLevel.MEDIUM

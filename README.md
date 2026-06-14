@@ -92,7 +92,7 @@ graph TD
     Start --> InputVid[Liveness Video]
 
     %% Parallel Processing
-    subgraph Parallel ML Inference (ROCm Optimized)
+    subgraph "Parallel ML Inference (ROCm Optimized)"
         InputDoc --> AgentExt[📄 Extraction Agent <br/> Qwen2-VL via vLLM]
         InputVid --> AgentLive[🎥 Liveness Agent <br/> PyTorch MobileNetV3]
     end

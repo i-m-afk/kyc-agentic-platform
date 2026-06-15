@@ -211,6 +211,13 @@ uploaded_gesture = st.sidebar.selectbox(
     format_func=lambda x: x.replace("_", " ").title()
 )
 
+use_minifasnet = st.sidebar.checkbox(
+    "Use MiniFASNet (Edge Spoof Model)",
+    value=False,
+    key="use_minifasnet_cb",
+    help="Enable edge-friendly SilentFaceAntiSpoofing (MiniFASNet) model inference fallback."
+)
+
 if st.sidebar.button("Add to Queue"):
     has_id = (id_mode == "Upload File" and uploaded_id_img is not None) or (id_mode == "Choose from uploads/ folder" and selected_id_path is not None)
     has_vid = (vid_mode == "Upload File" and uploaded_vid is not None) or (vid_mode == "Choose from uploads/ folder" and selected_vid_path is not None)
@@ -293,7 +300,8 @@ if st.session_state.selected_app_id:
                     app["id_image"],
                     app["video"],
                     app.get("expected_gesture", "2_fingers_near_eye"),
-                    app["name"]
+                    app["name"],
+                    use_minifasnet=st.session_state.get("use_minifasnet_cb", False)
                 )
                 app["pipeline_run"] = {
                     "extraction": ext_res,
@@ -345,16 +353,29 @@ if st.session_state.selected_app_id:
                 ai_check_badge = "⚠️ SUSPICIOUS"
 
             forgery_badge = "🚨 FORGERY DETECTED" if ext.forgery_detected else "✅ VERIFIED GENUINE"
+            
+            legibility_status = "✅ SHARP" if ext.legibility_score >= 0.70 else "❌ BLURRY"
+            syntax_status = "✅ VALID" if ext.syntax_valid else "❌ INVALID"
+            ovi_status = "✅ DETECTED" if ext.ovi_crest_detected else "❌ MISSING"
 
+            ocr_engine = "EasyOCR (Local Fallback)" if getattr(ext, "local_ocr_active", False) else "Qwen2-VL (vLLM Cloud)"
             st.markdown(f"""
             <div class="metric-card">
                 <p><strong>Extracted Name:</strong> {ext.name}</p>
                 <p><strong>DOB:</strong> {ext.dob}</p>
                 <p><strong>ID Number:</strong> <code>{ext.id_number}</code></p>
                 <p><strong>Extraction Confidence:</strong> {ext.confidence * 100:.1f}%</p>
+                <p><strong>Active OCR Engine:</strong> <code>{ocr_engine}</code></p>
                 <p><strong>Doc Authenticity:</strong> {forgery_badge}</p>
                 <p><strong>AI Generation Check:</strong> {ai_check_badge}</p>
                 {"<p style='color: #ef4444; font-size: 0.85rem; margin-top: 0.5rem; margin-bottom: 0;'><strong>Reason:</strong> " + ext.forgery_reason + "</p>" if ext.forgery_detected else ""}
+            </div>
+            
+            <div class="metric-card" style="margin-top: 1rem; border-left: 4px solid #6366f1;">
+                <h4 style="margin: 0 0 0.5rem 0; font-size: 0.95rem; color: #818cf8;">Programmatic Security Checks</h4>
+                <p><strong>Legibility Score:</strong> {ext.legibility_score:.2f} ({legibility_status})</p>
+                <p><strong>ID Syntax Match:</strong> {syntax_status}</p>
+                <p><strong>OVI Hologram Crest:</strong> {ovi_status}</p>
             </div>
             """, unsafe_allow_html=True)
             
@@ -378,9 +399,17 @@ if st.session_state.selected_app_id:
             gesture_status = "✅ PASSED" if live.gestural_challenge_passed else "❌ FAILED"
             deepfake_status = "❌ FAILED" if live.digital_deepfake_detected else "✅ PASSED"
             
+            face_match_decision = getattr(live, "face_match_decision", "MATCH")
+            face_match_badge = "✅ MATCH" if face_match_decision == "MATCH" else "🚨 MISMATCH"
+            face_sim = getattr(live, "face_similarity_score", 1.0)
+            liveness_model = "MiniFASNet (Edge)" if getattr(live, "minifasnet_active", False) else "MobileNetV3 (Standard)"
+
             st.markdown(f"""
             <div class="metric-card">
                 <p><strong>Liveness Outcome:</strong> {liveness_badge}</p>
+                <p><strong>Face Verification:</strong> {face_match_badge}</p>
+                <p><strong>Face Similarity Score:</strong> {face_sim * 100:.1f}%</p>
+                <p><strong>Active Liveness Model:</strong> <code>{liveness_model}</code></p>
                 <p><strong>Physical Liveness:</strong> {physical_status}</p>
                 <p><strong>Gesture Verification:</strong> {gesture_status}</p>
                 <p><strong>Deepfake/AI Detection:</strong> {deepfake_status}</p>
@@ -389,7 +418,38 @@ if st.session_state.selected_app_id:
                 <p><strong>Security Flags:</strong> {', '.join(live.flags) if live.flags else 'None'}</p>
             </div>
             """, unsafe_allow_html=True)
-            st.caption(f"📁 Face Video File: `{app['video']}` (Mock Preview)")
+            
+            # Mathematical Telemetry Plots
+            fft_val = live.fft_metrics.get("peak_ratio", 1.4)
+            fft_label = "GRID DETECTED" if live.fft_grid_detected else "NORMAL"
+            
+            flow_val = live.optical_flow_metrics.get("variance", 0.12)
+            flow_label = "WARPING" if live.optical_flow_mismatch else "NORMAL"
+
+            st.markdown("#### Mathematical Telemetry")
+            m_col1, m_col2 = st.columns(2)
+            with m_col1:
+                st.metric(
+                    label="FFT Peak Ratio",
+                    value=f"{fft_val:.2f}",
+                    delta=fft_label,
+                    delta_color="inverse" if live.fft_grid_detected else "normal"
+                )
+            with m_col2:
+                st.metric(
+                    label="Optical Flow Var",
+                    value=f"{flow_val:.2f}",
+                    delta=flow_label,
+                    delta_color="inverse" if live.optical_flow_mismatch else "normal"
+                )
+            
+            if live.rppg_signal:
+                st.markdown("##### Green-Channel Cardiac rPPG Signal")
+                st.line_chart(live.rppg_signal, height=130)
+                rppg_pulse_label = "Heartbeat Rhythm Detected" if live.rppg_pulse_detected else "Flatline / No Pulse Wave"
+                st.caption(f"rPPG Signal Rhythm: **{rppg_pulse_label}**")
+                
+            st.caption(f"📁 Face Video File: `{app['video']}`")
             
         with ag_col3:
             st.markdown("### 🔍 Screening Agent")

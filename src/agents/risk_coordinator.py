@@ -1,4 +1,5 @@
 from typing import Optional
+from difflib import SequenceMatcher
 from src.schemas.models import (
     ExtractionResult,
     LivenessResult,
@@ -22,7 +23,7 @@ def coordinate_risk(
     score = 0.0
     factors = []
 
-    # 1. Liveness Risk
+    # 1. Liveness & Spoofing Risk
     if liveness.liveness_status == LivenessStatus.FAILED:
         # High penalty for failed liveness
         liveness_score = 50.0 + (liveness.spoof_probability * 30.0)
@@ -44,7 +45,20 @@ def coordinate_risk(
             score += liveness.spoof_probability * 20.0
             factors.append(f"Elevated spoof probability: {liveness.spoof_probability}")
 
-    # 2. Watchlist Screening Risk
+    # 2. Advanced Mathematical Liveness Telemetry Penalties
+    if liveness.fft_grid_detected:
+        score += 40.0
+        factors.append("Periodic frequency grid detected (indicative of digital replay/deepfake)")
+        
+    if not liveness.rppg_pulse_detected:
+        score += 50.0
+        factors.append("No physiological pulse detected (non-living print/screen presentation)")
+        
+    if liveness.optical_flow_mismatch:
+        score += 35.0
+        factors.append("Optical flow warping anomaly (face-swapping mask edge mismatch)")
+
+    # 3. Watchlist Screening Risk
     if screening.match_found:
         if screening.risk_level == RiskLevel.HIGH:
             score += 65.0
@@ -53,14 +67,25 @@ def coordinate_risk(
             score += 35.0
             factors.append("Watchlist or adverse media match detected (Medium risk)")
     
-    # 3. Extraction Confidence Risk
+    # 4. Extraction Confidence & Quality Risk
     if extraction.confidence < 0.80:
         score += 15.0
         factors.append(f"Low document extraction confidence: {extraction.confidence}")
+        
+    if extraction.legibility_score < 0.70:
+        score += 20.0
+        factors.append(f"Low ID legibility/sharpness (blur detected, score: {extraction.legibility_score:.2f})")
+        
+    if not extraction.syntax_valid:
+        score += 25.0
+        factors.append("ID number format or check digit mismatch (DOB year/initials mismatch)")
+        
+    if not extraction.ovi_crest_detected:
+        score += 15.0
+        factors.append("Optically Variable Ink (OVI) hologram crest missing")
 
-    # 4. Identity & Name Matching Risk (Fuzzy matching)
+    # 5. Identity & Name Matching Risk (Fuzzy matching)
     if applicant_name and extraction.name:
-        from difflib import SequenceMatcher
         name1 = applicant_name.lower().strip()
         name2 = extraction.name.lower().strip()
         match_ratio = SequenceMatcher(None, name1, name2).ratio()
@@ -68,11 +93,27 @@ def coordinate_risk(
             score += 45.0
             factors.append(f"Identity mismatch: Submitted name '{applicant_name}' does not match ID name '{extraction.name}' (Match: {match_ratio*100:.1f}%)")
 
-    # 5. AI Generation & Digital Forgery Risk
+    # 6. AI Generation & Digital Forgery Risk
     if extraction.forgery_detected or extraction.ai_generated_check in ("SUSPICIOUS", "AI_GENERATED"):
         score += 50.0
         reason = extraction.forgery_reason or "Suspicious textures or inconsistent fonts detected"
         factors.append(f"AI generation/forgery detected on ID image: {reason}")
+
+    # 7. Face Verification Match
+    if getattr(liveness, "face_match_decision", "MATCH") == "MISMATCH":
+        score += 60.0
+        similarity = getattr(liveness, "face_similarity_score", 0.0)
+        factors.append(f"Face verification mismatch: ID photo and live face do not match (Similarity: {similarity*100:.1f}%)")
+    elif getattr(liveness, "face_similarity_score", 1.0) < 0.65:
+        score += 30.0
+        similarity = getattr(liveness, "face_similarity_score", 1.0)
+        factors.append(f"Low face similarity score: ID photo and live face match is weak (Similarity: {similarity*100:.1f}%)")
+
+    # 8. Fallback and model active indicators
+    if getattr(extraction, "local_ocr_active", False):
+        factors.append("Local EasyOCR fallback active (vLLM Qwen2-VL server was offline)")
+    if getattr(liveness, "minifasnet_active", False):
+        factors.append("Edge-friendly MiniFASNet model active for liveness detection")
 
     # Clamp score
     final_score = min(max(int(score), 0), 100)
@@ -82,6 +123,7 @@ def coordinate_risk(
         liveness.liveness_status == LivenessStatus.FAILED or 
         screening.risk_level == RiskLevel.HIGH or 
         extraction.forgery_detected or
+        getattr(liveness, "face_match_decision", "MATCH") == "MISMATCH" or
         (applicant_name and extraction.name and SequenceMatcher(None, applicant_name.lower().strip(), extraction.name.lower().strip()).ratio() < 0.5)):
         final_level = RiskLevel.HIGH
     elif final_score >= 35 or screening.risk_level == RiskLevel.MEDIUM:

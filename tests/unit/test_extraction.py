@@ -40,3 +40,35 @@ def test_extract_document_info_mock_default():
     assert res.dob == date(1995, 8, 30)
     assert res.id_number == "AS950830"
     assert res.confidence == 0.90
+    assert res.syntax_valid is True
+    assert res.legibility_score >= 0.90
+
+def test_extract_document_info_blurry():
+    os.environ["MOCK_ML"] = "True"
+    res = extract_document_info("blurry_id_card.jpg")
+    assert isinstance(res, ExtractionResult)
+    assert res.legibility_score <= 0.50
+
+def test_id_syntax_validation():
+    from src.agents.extraction import validate_id_syntax
+    # Valid syntax matching DOB
+    assert validate_id_syntax("AS950830", date(1995, 8, 30), "Alice Smith") is True
+    assert validate_id_syntax("RV780214", date(1978, 2, 14), "Robert Vance") is True
+    # Invalid syntax due to mismatch in year/initials
+    assert validate_id_syntax("JD9900515", date(1990, 5, 15), "Jane Doe") is False
+    assert validate_id_syntax("XX123456", date(1995, 8, 30), "Alice Smith") is False
+
+def test_extract_document_info_local_ocr_fallback():
+    os.environ["MOCK_ML"] = "False"
+    os.environ["VLLM_API_URL"] = "http://invalid-url-to-trigger-fallback.xyz"
+    dummy_path = "jane_doe_temp_id.jpg"
+    with open(dummy_path, "w") as f:
+        f.write("dummy content")
+    try:
+        res = extract_document_info(dummy_path)
+        assert isinstance(res, ExtractionResult)
+        assert res.local_ocr_active is True
+        assert res.name == "Jane Doe"
+    finally:
+        if os.path.exists(dummy_path):
+            os.remove(dummy_path)

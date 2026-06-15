@@ -43,9 +43,13 @@ class ExtractionResult(BaseModel):
     dob: date
     id_number: str = Field(..., min_length=1)
     confidence: float = Field(..., ge=0.0, le=1.0)
+    legibility_score: float = Field(default=1.0, ge=0.0, le=1.0)
+    syntax_valid: bool = Field(default=True)
+    ovi_crest_detected: bool = Field(default=True)
     ai_generated_check: Optional[str] = "CLEAN"  # "CLEAN", "SUSPICIOUS", "AI_GENERATED"
     forgery_detected: Optional[bool] = False
     forgery_reason: Optional[str] = ""
+    local_ocr_active: bool = Field(default=False)
 
     @field_validator("dob")
     @classmethod
@@ -68,7 +72,16 @@ class LivenessResult(BaseModel):
     physical_spoof_detected: bool = False
     gestural_challenge_passed: bool = True
     digital_deepfake_detected: bool = False
+    fft_grid_detected: bool = False
+    rppg_pulse_detected: bool = True
+    optical_flow_mismatch: bool = False
     flags: List[str] = Field(default_factory=list)
+    fft_metrics: Dict[str, float] = Field(default_factory=dict)
+    rppg_signal: List[float] = Field(default_factory=list)
+    optical_flow_metrics: Dict[str, float] = Field(default_factory=dict)
+    face_similarity_score: float = Field(default=1.0, ge=0.0, le=1.0)
+    face_match_decision: str = Field(default="MATCH")
+    minifasnet_active: bool = Field(default=False)
 
 class ScreeningResult(BaseModel):
     match_found: bool

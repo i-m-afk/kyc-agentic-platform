@@ -113,6 +113,8 @@ def get_liveness_model_path() -> str:
     path = get_config("LIVENESS_MODEL_PATH", default_path)
     if os.path.exists(path):
         return path
+    if os.path.basename(os.getcwd()) == "notebooks" and os.path.exists("../liveness_model.pt"):
+        return "../liveness_model.pt"
     if os.path.exists("liveness_model.pt") and os.path.basename(os.getcwd()) != "notebooks":
         return "liveness_model.pt"
     

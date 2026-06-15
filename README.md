@@ -73,7 +73,7 @@ The pipeline uses a functional, stateless multi-agent topology to avoid state-ma
 2.  **Liveness Agent (Anti-Spoofing)**:
     * Executes a custom-trained **MobileNetV3 PyTorch Classifier** on AMD GPU hardware.
     * Runs physical spoof detection, device-glare analysis, and deepfake anomaly identification on video frames.
-    * Validates user compliance against randomized gestural challenges (e.g. "3 fingers near cheek").
+    * Validates user compliance against randomized gestural challenges (e.g. "3 fingers near cheek") using **MediaPipe Hands** (with a contour-based OpenCV fallback).
 3.  **Screener Agent (Compliance)**:
     * Performs multi-target watchlist (PEP / Sanctions) and Adverse Media matches.
     * Screens **both** the submitted applicant name AND the extracted ID card name if they differ.
@@ -81,6 +81,7 @@ The pipeline uses a functional, stateless multi-agent topology to avoid state-ma
 4.  **Risk Coordinator Agent (Consolidator)**:
     * Combines all outputs in a single consensus calculation.
     * Runs **Fuzzy Name Similarity Matching** (using sequence matching ratio) between the user-inputted name and the ID document name.
+    * Features a dual **Cognitive LLM Decision Coordinator** and **Rule-Based Fallback** mechanism. It attempts to send formatted biometric and compliance telemetry to local vLLM models for semantic coordination, and gracefully falls back to deterministic rule scoring if the server is offline.
     * Assigns explainable risk flags, calculates the consolidated 0-100 score, and decides the application status (LOW/MEDIUM/HIGH).
 
 ### Architecture Data Flow

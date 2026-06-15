@@ -47,3 +47,10 @@ def test_screen_applicant_case_insensitive():
     assert res.match_found is True
     assert len(res.watchlist_hits) > 0
     assert res.risk_level == RiskLevel.HIGH
+
+def test_screen_applicant_both_names():
+    # Extracted name is clean, but submitted name is "jane doe" (matches watchlist)
+    ext = create_mock_extraction("Alice Smith")
+    res = screen_applicant(ext, applicant_name="Jane Doe")
+    assert res.match_found is True
+    assert any(hit.matched_on == "submitted_name" for hit in res.watchlist_hits)

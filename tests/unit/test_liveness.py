@@ -101,3 +101,11 @@ def test_verify_liveness_minifasnet_active():
     os.environ["MOCK_ML"] = "True"
     res = verify_liveness("alice_live.mp4", use_minifasnet=True)
     assert res.minifasnet_active is True
+    assert res.mediapipe_gesture_matched is True
+    assert isinstance(res.ensemble_metrics, dict)
+    assert "face_similarity" in res.ensemble_metrics
+    assert "minifasnet_spoof_prob" in res.ensemble_metrics
+    assert "mediapipe_gesture_match" in res.ensemble_metrics
+    assert "fft_peak_ratio" in res.ensemble_metrics
+    assert "rppg_pulse_detected" in res.ensemble_metrics
+    assert "optical_flow_var" in res.ensemble_metrics

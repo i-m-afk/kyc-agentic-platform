@@ -336,7 +336,8 @@ if st.session_state.selected_app_id:
         <div class="{banner_class}">
             <h3 style='margin-top: 0; color: inherit;'>Consolidated Risk Report: <span style='color: {risk_color}; font-weight: 800;'>{risk.risk_level.value} RISK</span></h3>
             <p style='font-size: 1.15rem; margin-bottom: 0.5rem;'><strong>Consolidated Risk Score:</strong> <span style='font-size: 1.3rem; font-weight: 800;'>{risk.risk_score} / 100</span></p>
-            <p style='margin: 0;'><strong>Explanation:</strong> {risk.explanation}</p>
+            <p style='margin-bottom: 0.5rem;'><strong>Explanation:</strong> {risk.explanation}</p>
+            <p style='margin: 0; font-size: 0.9rem; opacity: 0.9;'><strong>Decision Coordinator Mode:</strong> <code>{getattr(risk, "coordinator_decision_mode", "COGNITIVE_LLM")}</code></p>
         </div>
         """, unsafe_allow_html=True)
         
@@ -359,6 +360,8 @@ if st.session_state.selected_app_id:
             ovi_status = "✅ DETECTED" if ext.ovi_crest_detected else "❌ MISSING"
 
             ocr_engine = "EasyOCR (Local Fallback)" if getattr(ext, "local_ocr_active", False) else "Qwen2-VL (vLLM Cloud)"
+            if getattr(ext, "local_ocr_active", False):
+                st.warning("⚠️ Local EasyOCR Fallback Active (vLLM offline)")
             st.markdown(f"""
             <div class="metric-card">
                 <p><strong>Extracted Name:</strong> {ext.name}</p>
@@ -418,6 +421,22 @@ if st.session_state.selected_app_id:
                 <p><strong>Security Flags:</strong> {', '.join(live.flags) if live.flags else 'None'}</p>
             </div>
             """, unsafe_allow_html=True)
+
+            if getattr(live, "ensemble_metrics", None):
+                st.markdown("#### Pretrained Model Ensemble")
+                metrics = live.ensemble_metrics
+                gest_match_str = "✅ MATCH" if metrics.get("mediapipe_gesture_match") else "❌ MISMATCH"
+                rppg_det_str = "✅ PULSE" if metrics.get("rppg_pulse_detected") else "❌ FLATLINE"
+                st.markdown(f"""
+                <div class="metric-card" style="border-left: 4px solid #10b981;">
+                    <p style="margin-bottom: 0.3rem;"><strong>Face Similarity (FaceNet):</strong> {metrics.get('face_similarity', 0.0)*100:.1f}%</p>
+                    <p style="margin-bottom: 0.3rem;"><strong>Spoof Prob (MiniFASNet):</strong> {metrics.get('minifasnet_spoof_prob', 0.0)*100:.1f}%</p>
+                    <p style="margin-bottom: 0.3rem;"><strong>Gesture Check (MediaPipe):</strong> {gest_match_str}</p>
+                    <p style="margin-bottom: 0.3rem;"><strong>FFT Peak Ratio:</strong> {metrics.get('fft_peak_ratio', 0.0):.2f}</p>
+                    <p style="margin-bottom: 0.3rem;"><strong>rPPG Cardiac Pulse:</strong> {rppg_det_str}</p>
+                    <p style="margin-bottom: 0;"><strong>Optical Flow Variance:</strong> {metrics.get('optical_flow_var', 0.0):.4f}</p>
+                </div>
+                """, unsafe_allow_html=True)
             
             # Mathematical Telemetry Plots
             fft_val = live.fft_metrics.get("peak_ratio", 1.4)

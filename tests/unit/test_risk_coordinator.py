@@ -61,3 +61,12 @@ def test_coordinate_risk_fuzzy_name_match():
     report = coordinate_risk(ext, live, screen, audit_log={}, applicant_name="Rishav Kumar")
     assert report.risk_level == RiskLevel.LOW
     assert "Identity mismatch" not in report.explanation
+
+def test_coordinate_risk_decision_mode():
+    ext = ExtractionResult(name="Alice Smith", dob=date(1995, 8, 30), id_number="AS950830", confidence=0.95)
+    live = LivenessResult(liveness_status=LivenessStatus.PASSED, confidence=0.98, spoof_probability=0.02, flags=[])
+    screen = ScreeningResult(match_found=False, watchlist_hits=[], adverse_media_hits=[], risk_level=RiskLevel.LOW)
+    
+    # Under MOCK_ML, decision mode must be RULE_BASED fallback
+    report = coordinate_risk(ext, live, screen, audit_log={})
+    assert report.coordinator_decision_mode == "RULE_BASED"

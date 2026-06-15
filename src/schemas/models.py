@@ -82,6 +82,8 @@ class LivenessResult(BaseModel):
     face_similarity_score: float = Field(default=1.0, ge=0.0, le=1.0)
     face_match_decision: str = Field(default="MATCH")
     minifasnet_active: bool = Field(default=False)
+    mediapipe_gesture_matched: bool = Field(default=True)
+    ensemble_metrics: Dict[str, Any] = Field(default_factory=dict)
 
 class ScreeningResult(BaseModel):
     match_found: bool
@@ -93,4 +95,6 @@ class ConsolidatedRiskReport(BaseModel):
     risk_score: int = Field(..., ge=0, le=100)
     risk_level: RiskLevel
     explanation: str
+    coordinator_decision_mode: str = Field(default="COGNITIVE_LLM")
     agent_audit_log: Dict[str, Any] = Field(default_factory=dict)
+

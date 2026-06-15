@@ -1,4 +1,7 @@
-from typing import Optional
+import os
+import json
+import httpx
+from typing import Optional, Dict, Any
 from difflib import SequenceMatcher
 from src.schemas.models import (
     ExtractionResult,
@@ -8,6 +11,7 @@ from src.schemas.models import (
     RiskLevel,
     ConsolidatedRiskReport
 )
+from src.utils.helpers import get_vllm_api_url, get_mock_ml_flag
 
 def calculate_name_similarity(name1: str, name2: str) -> float:
     """
@@ -55,17 +59,18 @@ def coordinate_risk(
     """
     Consolidates the outputs of the Extraction, Liveness, and Screener agents
     into a final risk score (0-100), risk level (LOW/MEDIUM/HIGH), and explanation.
+    Uses a local vLLM model to perform cognitive coordination when possible,
+    falling back to deterministic rule-based scoring if the server is offline.
     """
+    # 1. Compute rule-based fallback values first (always available as fallback)
     score = 0.0
     factors = []
 
-    # 1. Liveness & Spoofing Risk
+    # Liveness & Spoofing Risk
     if liveness.liveness_status == LivenessStatus.FAILED:
-        # High penalty for failed liveness
         liveness_score = 50.0 + (liveness.spoof_probability * 30.0)
         score += liveness_score
         
-        # Add specific factors based on the detailed spoof detections
         if liveness.physical_spoof_detected:
             factors.append("Physical spoof detected (printed photo or screen replay)")
         if not liveness.gestural_challenge_passed:
@@ -76,12 +81,11 @@ def coordinate_risk(
         if not (liveness.physical_spoof_detected or not liveness.gestural_challenge_passed or liveness.digital_deepfake_detected):
             factors.append(f"Liveness check failed (spoof probability: {liveness.spoof_probability})")
     else:
-        # Small contribution for low confidence liveness
         if liveness.spoof_probability > 0.15:
             score += liveness.spoof_probability * 20.0
             factors.append(f"Elevated spoof probability: {liveness.spoof_probability}")
 
-    # 2. Advanced Mathematical Liveness Telemetry Penalties
+    # Advanced Liveness Telemetry
     if liveness.fft_grid_detected:
         score += 40.0
         factors.append("Periodic frequency grid detected (indicative of digital replay/deepfake)")
@@ -94,7 +98,7 @@ def coordinate_risk(
         score += 35.0
         factors.append("Optical flow warping anomaly (face-swapping mask edge mismatch)")
 
-    # 3. Watchlist Screening Risk
+    # Watchlist Screening
     if screening.match_found:
         if screening.risk_level == RiskLevel.HIGH:
             score += 65.0
@@ -103,7 +107,7 @@ def coordinate_risk(
             score += 35.0
             factors.append("Watchlist or adverse media match detected (Medium risk)")
     
-    # 4. Extraction Confidence & Quality Risk
+    # Extraction Confidence & Quality
     if extraction.confidence < 0.80:
         score += 15.0
         factors.append(f"Low document extraction confidence: {extraction.confidence}")
@@ -120,60 +124,159 @@ def coordinate_risk(
         score += 15.0
         factors.append("Optically Variable Ink (OVI) hologram crest missing")
 
-    # 5. Identity & Name Matching Risk (Fuzzy matching)
+    # Identity fuzzy name match
+    name_match_ratio = 1.0
     if applicant_name and extraction.name:
-        match_ratio = calculate_name_similarity(applicant_name, extraction.name)
-        if match_ratio < 0.80:
+        name_match_ratio = calculate_name_similarity(applicant_name, extraction.name)
+        if name_match_ratio < 0.80:
             score += 45.0
-            factors.append(f"Identity mismatch: Submitted name '{applicant_name}' does not match ID name '{extraction.name}' (Match: {match_ratio*100:.1f}%)")
+            factors.append(f"Identity mismatch: Submitted name '{applicant_name}' does not match ID name '{extraction.name}' (Match: {name_match_ratio*100:.1f}%)")
 
-    # 6. AI Generation & Digital Forgery Risk
+    # AI Generation / Forgery
     if extraction.forgery_detected or extraction.ai_generated_check in ("SUSPICIOUS", "AI_GENERATED"):
         score += 50.0
         reason = extraction.forgery_reason or "Suspicious textures or inconsistent fonts detected"
         factors.append(f"AI generation/forgery detected on ID image: {reason}")
 
-    # 7. Face Verification Match
-    if getattr(liveness, "face_match_decision", "MATCH") == "MISMATCH":
+    # Face verification match
+    face_similarity = getattr(liveness, "face_similarity_score", 1.0)
+    face_match_decision = getattr(liveness, "face_match_decision", "MATCH")
+    if face_match_decision == "MISMATCH":
         score += 60.0
-        similarity = getattr(liveness, "face_similarity_score", 0.0)
-        factors.append(f"Face verification mismatch: ID photo and live face do not match (Similarity: {similarity*100:.1f}%)")
-    elif getattr(liveness, "face_similarity_score", 1.0) < 0.65:
+        factors.append(f"Face verification mismatch: ID photo and live face do not match (Similarity: {face_similarity*100:.1f}%)")
+    elif face_similarity < 0.65:
         score += 30.0
-        similarity = getattr(liveness, "face_similarity_score", 1.0)
-        factors.append(f"Low face similarity score: ID photo and live face match is weak (Similarity: {similarity*100:.1f}%)")
+        factors.append(f"Low face similarity score: ID photo and live face match is weak (Similarity: {face_similarity*100:.1f}%)")
 
-    # 8. Fallback and model active indicators
+    # Fallback/active indicators
     if getattr(extraction, "local_ocr_active", False):
         factors.append("Local EasyOCR fallback active (vLLM Qwen2-VL server was offline)")
     if getattr(liveness, "minifasnet_active", False):
         factors.append("Edge-friendly MiniFASNet model active for liveness detection")
 
-    # Clamp score
-    final_score = min(max(int(score), 0), 100)
-
-    # Determine risk level
-    if (final_score >= 70 or 
+    fallback_score = min(max(int(score), 0), 100)
+    if (fallback_score >= 70 or 
         liveness.liveness_status == LivenessStatus.FAILED or 
         screening.risk_level == RiskLevel.HIGH or 
         extraction.forgery_detected or
-        getattr(liveness, "face_match_decision", "MATCH") == "MISMATCH" or
-        (applicant_name and extraction.name and calculate_name_similarity(applicant_name, extraction.name) < 0.5)):
-        final_level = RiskLevel.HIGH
-    elif final_score >= 35 or screening.risk_level == RiskLevel.MEDIUM:
-        final_level = RiskLevel.MEDIUM
+        face_match_decision == "MISMATCH" or
+        (applicant_name and extraction.name and name_match_ratio < 0.5)):
+        fallback_level = RiskLevel.HIGH
+    elif fallback_score >= 35 or screening.risk_level == RiskLevel.MEDIUM:
+        fallback_level = RiskLevel.MEDIUM
     else:
-        final_level = RiskLevel.LOW
+        fallback_level = RiskLevel.LOW
 
-    # Generate explanation
     if not factors:
-        explanation = "No risk factors detected. Applicant cleared."
+        fallback_explanation = "No risk factors detected. Applicant cleared."
     else:
-        explanation = f"Risk factors identified: {'; '.join(factors)}."
+        fallback_explanation = f"Risk factors identified: {'; '.join(factors)}."
 
+    # Try Cognitive LLM Coordination if vLLM is available and MOCK_ML is false
+    if not get_mock_ml_flag():
+        api_url = get_vllm_api_url()
+        # Query vLLM models registry
+        model_name = "Qwen/Qwen2-VL-7B-Instruct"
+        try:
+            models_resp = httpx.get(f"{api_url}/models", timeout=2.0)
+            if models_resp.status_code == 200:
+                models_data = models_resp.json()
+                if "data" in models_data and len(models_data["data"]) > 0:
+                    model_name = models_data["data"][0]["id"]
+        except Exception:
+            pass
+
+        system_prompt = (
+            "You are a senior KYC compliance risk coordinator. Evaluate the following applicant telemetry and decide the application verdict. "
+            "Reason through conflicting signals (e.g., high noise/frequency grids vs actual spoofs). "
+            "Output EXACTLY in JSON format matching this schema:\n"
+            "{\n"
+            '  "risk_score": <0-100>,\n'
+            '  "risk_level": "LOW"|"MEDIUM"|"HIGH",\n'
+            '  "decision": "APPROVED"|"ESCALATED",\n'
+            '  "explanation": "<reasoning>"\n'
+            "}\n"
+            "Do not include markdown fences or any other text before/after JSON."
+        )
+
+        user_prompt = f"""
+Applicant Details:
+- Submitted Name: {applicant_name or 'N/A'}
+- Extracted Name from ID: {extraction.name or 'N/A'}
+- Fuzzy Name Match Score: {name_match_ratio:.2f}
+
+Biometric Telemetry:
+- Face Verification Similarity Score: {face_similarity:.2f}
+- Face Match Decision: {face_match_decision}
+
+Liveness Telemetry:
+- Liveness Status: {liveness.liveness_status.value}
+- MiniFASNet Spoof Probability: {liveness.spoof_probability:.2f}
+- MediaPipe Gesture Check: {'MATCH' if liveness.mediapipe_gesture_matched else 'MISMATCH'}
+- FFT Peak Ratio (Compression/Deepfake check): {liveness.fft_metrics.get('peak_ratio', 1.4):.2f}
+- rPPG Heartbeat check: {'PASS' if liveness.rppg_pulse_detected else 'FAIL'}
+- Optical Flow movement: {'PASS' if not liveness.optical_flow_mismatch else 'FAIL'}
+
+Compliance Screening:
+- Watchlist Match: {'YES' if screening.match_found else 'NO'}
+- Watchlist Risk Level: {screening.risk_level.value}
+
+Document Quality:
+- Extraction Confidence: {extraction.confidence:.2f}
+- ID Legibility Score: {extraction.legibility_score:.2f}
+- Hologram/Crest Detected: {'YES' if extraction.ovi_crest_detected else 'NO'}
+- AI Generation/Forgery Detected: {'YES' if extraction.forgery_detected or extraction.ai_generated_check in ('SUSPICIOUS', 'AI_GENERATED') else 'NO'}
+- Forgery Reason: {extraction.forgery_reason or 'None'}
+"""
+
+        payload = {
+            "model": model_name,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            "temperature": 0.0,
+            "max_tokens": 300
+        }
+
+        try:
+            resp = httpx.post(f"{api_url}/chat/completions", json=payload, headers={"Content-Type": "application/json"}, timeout=15.0)
+            if resp.status_code == 200:
+                resp_data = resp.json()
+                content = resp_data["choices"][0]["message"]["content"].strip()
+                if content.startswith("```json"):
+                    content = content[7:]
+                if content.endswith("```"):
+                    content = content[:-3]
+                content = content.strip()
+
+                llm_res = json.loads(content)
+                risk_score = min(max(int(llm_res.get("risk_score", fallback_score)), 0), 100)
+                risk_level_str = llm_res.get("risk_level", "HIGH").upper()
+                if risk_level_str == "LOW":
+                    risk_level = RiskLevel.LOW
+                elif risk_level_str == "MEDIUM":
+                    risk_level = RiskLevel.MEDIUM
+                else:
+                    risk_level = RiskLevel.HIGH
+
+                explanation = llm_res.get("explanation", fallback_explanation)
+                
+                return ConsolidatedRiskReport(
+                    risk_score=risk_score,
+                    risk_level=risk_level,
+                    explanation=explanation,
+                    coordinator_decision_mode="COGNITIVE_LLM",
+                    agent_audit_log=audit_log
+                )
+        except Exception as e:
+            print(f"vLLM coordination query failed: {e}. Falling back to rule-based coordination.")
+
+    # Rule-based fallback return
     return ConsolidatedRiskReport(
-        risk_score=final_score,
-        risk_level=final_level,
-        explanation=explanation,
+        risk_score=fallback_score,
+        risk_level=fallback_level,
+        explanation=fallback_explanation,
+        coordinator_decision_mode="RULE_BASED",
         agent_audit_log=audit_log
     )

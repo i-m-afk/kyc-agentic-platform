@@ -1,6 +1,6 @@
 import os
 import numpy as np
-from typing import Optional, List, Tuple, Dict
+from typing import Optional, List, Tuple, Dict, Any
 from src.schemas.models import LivenessResult, LivenessStatus
 from src.utils.helpers import get_mock_ml_flag, get_liveness_model_path
 
@@ -19,6 +19,20 @@ try:
     from torchvision import models, transforms
     from PIL import Image
     TORCH_AVAILABLE = True
+except ImportError:
+    pass
+
+FACENET_AVAILABLE = False
+try:
+    from facenet_pytorch import InceptionResnetV1
+    FACENET_AVAILABLE = True
+except ImportError:
+    pass
+
+MEDIAPIPE_AVAILABLE = False
+try:
+    import mediapipe as mp
+    MEDIAPIPE_AVAILABLE = True
 except ImportError:
     pass
 
@@ -64,6 +78,137 @@ def extract_frames(video_path: str, num_frames: int = 5) -> List[np.ndarray]:
         
     cap.release()
     return frames
+
+def align_face(image: np.ndarray) -> np.ndarray:
+    """
+    Detects face and aligns it horizontally using eye coordinates (deskewing).
+    If eye detection fails, returns the detected face crop or original image.
+    """
+    if not OPENCV_AVAILABLE:
+        return image
+
+    try:
+        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
+
+        faces = face_cascade.detectMultiScale(gray, 1.1, 4)
+        if len(faces) == 0:
+            return image
+
+        # Take largest face
+        x, y, w, h = sorted(faces, key=lambda f: f[2]*f[3], reverse=True)[0]
+        face_crop = image[y:y+h, x:x+w]
+        face_gray = gray[y:y+h, x:x+w]
+
+        eyes = eye_cascade.detectMultiScale(face_gray, 1.1, 3)
+        if len(eyes) >= 2:
+            # Sort eyes by x coordinate
+            eyes = sorted(eyes, key=lambda e: e[0])
+            eye1_center = (eyes[0][0] + eyes[0][2] // 2, eyes[0][1] + eyes[0][3] // 2)
+            eye2_center = (eyes[1][0] + eyes[1][2] // 2, eyes[1][1] + eyes[1][3] // 2)
+
+            # Midpoint between eyes
+            midpoint = (
+                (eye1_center[0] + eye2_center[0]) // 2,
+                (eye1_center[1] + eye2_center[1]) // 2
+            )
+
+            # Compute rotation angle
+            dy = eye2_center[1] - eye1_center[1]
+            dx = eye2_center[0] - eye1_center[0]
+            angle = np.degrees(np.arctan2(dy, dx))
+
+            # Rotate face
+            rot_mat = cv2.getRotationMatrix2D(midpoint, angle, 1.0)
+            aligned_face = cv2.warpAffine(face_crop, rot_mat, (w, h), flags=cv2.INTER_CUBIC)
+            return aligned_face
+
+        return face_crop
+    except Exception as e:
+        print(f"Face alignment failed: {e}")
+        return image
+
+def get_face_embedding(face_img: np.ndarray, model, device) -> np.ndarray:
+    """Extracts a 512-d embedding from a face image using FaceNet."""
+    # Resize to 160x160
+    face_resized = cv2.resize(face_img, (160, 160))
+    # Convert to float32 tensor
+    tensor = torch.tensor(face_resized, dtype=torch.float32).permute(2, 0, 1) # 3, 160, 160
+    # Normalize: (x - 127.5) / 128.0 (FaceNet standard scaling)
+    tensor = (tensor - 127.5) / 128.0
+    tensor = tensor.unsqueeze(0).to(device)
+    with torch.no_grad():
+        embedding = model(tensor)
+    return embedding.cpu().numpy()[0]
+
+def cosine_similarity(emb1: np.ndarray, emb2: np.ndarray) -> float:
+    dot_product = np.dot(emb1, emb2)
+    norm_a = np.linalg.norm(emb1)
+    norm_b = np.linalg.norm(emb2)
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return float(dot_product / (norm_a * norm_b))
+
+def estimate_fingers_mediapipe(frames: List[np.ndarray]) -> int:
+    """Estimate finger count using MediaPipe Hands."""
+    if not frames or not MEDIAPIPE_AVAILABLE:
+        return 0
+    import mediapipe as mp
+    mp_hands = mp.solutions.hands
+    
+    # Initialize hands detector
+    with mp_hands.Hands(
+        static_image_mode=True,
+        max_num_hands=1,
+        min_detection_confidence=0.3
+    ) as hands:
+        finger_counts = []
+        for frame in frames:
+            # MediaPipe expects RGB
+            results = hands.process(frame)
+            if not results.multi_hand_landmarks:
+                continue
+                
+            for hand_landmarks in results.multi_hand_landmarks:
+                # Get landmarks
+                lm = hand_landmarks.landmark
+                
+                # Check fingers
+                fingers_up = 0
+                
+                # Index finger: TIP (8) vs PIP (6)
+                if lm[8].y < lm[6].y:
+                    fingers_up += 1
+                # Middle finger: TIP (12) vs PIP (10)
+                if lm[12].y < lm[10].y:
+                    fingers_up += 1
+                # Ring finger: TIP (16) vs PIP (14)
+                if lm[16].y < lm[14].y:
+                    fingers_up += 1
+                # Pinky finger: TIP (20) vs PIP (18)
+                if lm[20].y < lm[18].y:
+                    fingers_up += 1
+                # Thumb: TIP (4) vs IP (3)
+                def dist(p1, p2):
+                    return ((p1.x - p2.x)**2 + (p1.y - p2.y)**2)**0.5
+                if dist(lm[4], lm[0]) > dist(lm[3], lm[0]):
+                    fingers_up += 1
+                    
+                finger_counts.append(fingers_up)
+                
+        if not finger_counts:
+            return 0
+        return int(np.percentile(finger_counts, 50))
+
+def estimate_fingers(frames: List[np.ndarray]) -> int:
+    """Combines MediaPipe and OpenCV methods to estimate finger count."""
+    if MEDIAPIPE_AVAILABLE:
+        try:
+            return estimate_fingers_mediapipe(frames)
+        except Exception as e:
+            print(f"MediaPipe finger estimation failed: {e}. Falling back to OpenCV skin segmentation.")
+    return estimate_fingers_opencv(frames)
 
 def estimate_fingers_opencv(frames: List[np.ndarray]) -> int:
     """Estimate finger count from frames using skin color thresholding and contours."""
@@ -221,7 +366,7 @@ def compute_optical_flow_metrics(frames: List[np.ndarray]) -> Tuple[bool, Dict[s
 def compute_face_similarity(id_image_path: Optional[str], video_path: str, frames: Optional[List[np.ndarray]] = None) -> Tuple[float, str]:
     """
     Computes a 1:1 facial similarity match between the photo on the ID document
-    and the face frames in the liveness video.
+    and the face frames in the liveness video using FaceNet (if available) or OpenCV template matching.
     Returns (similarity_score, face_match_decision).
     """
     if not id_image_path:
@@ -248,6 +393,43 @@ def compute_face_similarity(id_image_path: Optional[str], video_path: str, frame
     if is_mismatch:
         return 0.35, "MISMATCH"
 
+    # Real FaceNet execution
+    if TORCH_AVAILABLE and FACENET_AVAILABLE and OPENCV_AVAILABLE:
+        try:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            model = InceptionResnetV1(pretrained='vggface2').eval().to(device)
+
+            if os.path.exists(id_image_path):
+                id_img = cv2.imread(id_image_path)
+                if id_img is not None:
+                    id_img_rgb = cv2.cvtColor(id_img, cv2.COLOR_BGR2RGB)
+                    id_face = align_face(id_img_rgb)
+                    if id_face is not None:
+                        id_emb = get_face_embedding(id_face, model, device)
+                        
+                        if not frames:
+                            frames = extract_frames(video_path, num_frames=5)
+                        
+                        video_embs = []
+                        for frame in frames:
+                            vid_face = align_face(frame)
+                            if vid_face is not None:
+                                try:
+                                    vid_emb = get_face_embedding(vid_face, model, device)
+                                    video_embs.append(vid_emb)
+                                except Exception:
+                                    pass
+                        
+                        if video_embs:
+                            sims = [cosine_similarity(id_emb, v_emb) for v_emb in video_embs]
+                            score = float(np.mean(sims))
+                            score = max(0.0, min(1.0, score))
+                            decision = "MATCH" if score >= 0.60 else "MISMATCH"
+                            return round(score, 3), decision
+        except Exception as e:
+            print(f"FaceNet similarity extraction failed: {e}. Falling back to OpenCV template matching.")
+
+    # OpenCV fallback
     if OPENCV_AVAILABLE and os.path.exists(id_image_path):
         try:
             id_img = cv2.imread(id_image_path)
@@ -391,6 +573,15 @@ def verify_liveness(
         if expected_gesture and status == LivenessStatus.PASSED:
             flags.append(f"gesture_{expected_gesture}_verified")
 
+        ensemble_metrics = {
+            "face_similarity": float(similarity_score),
+            "minifasnet_spoof_prob": float(spoof_prob),
+            "mediapipe_gesture_match": bool(gestural_passed),
+            "fft_peak_ratio": float(fft_metrics.get("peak_ratio", 1.4)),
+            "rppg_pulse_detected": bool(rppg_pulse),
+            "optical_flow_var": float(flow_metrics.get("variance", 0.12))
+        }
+
         return LivenessResult(
             liveness_status=status,
             confidence=round(confidence, 3),
@@ -407,7 +598,9 @@ def verify_liveness(
             optical_flow_metrics=flow_metrics,
             face_similarity_score=similarity_score,
             face_match_decision=face_match_decision,
-            minifasnet_active=use_minifasnet
+            minifasnet_active=use_minifasnet,
+            mediapipe_gesture_matched=gestural_passed,
+            ensemble_metrics=ensemble_metrics
         )
 
     # 3. Real inference logic (or hybrid fallback)
@@ -481,6 +674,15 @@ def verify_liveness(
             if expected_gesture and status == LivenessStatus.PASSED:
                 flags.append(f"gesture_{expected_gesture}_verified")
 
+            ensemble_metrics = {
+                "face_similarity": float(similarity_score),
+                "minifasnet_spoof_prob": float(spoof_prob),
+                "mediapipe_gesture_match": bool(gestural_passed),
+                "fft_peak_ratio": float(fft_metrics.get("peak_ratio", 1.4)),
+                "rppg_pulse_detected": bool(rppg_pulse),
+                "optical_flow_var": float(flow_metrics.get("variance", 0.12))
+            }
+
             return LivenessResult(
                 liveness_status=status,
                 confidence=round(confidence, 3),
@@ -497,7 +699,9 @@ def verify_liveness(
                 optical_flow_metrics=flow_metrics,
                 face_similarity_score=similarity_score,
                 face_match_decision=face_match_decision,
-                minifasnet_active=use_minifasnet
+                minifasnet_active=use_minifasnet,
+                mediapipe_gesture_matched=gestural_passed,
+                ensemble_metrics=ensemble_metrics
             )
         raise FileNotFoundError(f"Liveness video file not found at {video_path}")
 
@@ -573,11 +777,11 @@ def verify_liveness(
         digital_deepfake = fft_grid or flow_mismatch
         avg_spoof_prob = 0.95 if (physical_spoof or digital_deepfake) else 0.05
 
-    # Gestural check using OpenCV contour pipeline
+    # Gestural check using MediaPipe/OpenCV contour pipeline
     gestural_passed = True
     if OPENCV_AVAILABLE and expected_gesture:
         try:
-            detected_fingers = estimate_fingers_opencv(frames)
+            detected_fingers = estimate_fingers(frames)
             expected_count = 2
             if "3" in expected_gesture:
                 expected_count = 3
@@ -615,6 +819,15 @@ def verify_liveness(
     if expected_gesture and status == LivenessStatus.PASSED:
         flags.append(f"gesture_{expected_gesture}_verified")
 
+    ensemble_metrics = {
+        "face_similarity": float(similarity_score),
+        "minifasnet_spoof_prob": float(avg_spoof_prob),
+        "mediapipe_gesture_match": bool(gestural_passed),
+        "fft_peak_ratio": float(fft_metrics.get("peak_ratio", 1.4)),
+        "rppg_pulse_detected": bool(rppg_pulse),
+        "optical_flow_var": float(flow_metrics.get("variance", 0.12))
+    }
+
     return LivenessResult(
         liveness_status=status,
         confidence=round(confidence, 3),
@@ -631,5 +844,7 @@ def verify_liveness(
         optical_flow_metrics=flow_metrics,
         face_similarity_score=similarity_score,
         face_match_decision=face_match_decision,
-        minifasnet_active=use_minifasnet
+        minifasnet_active=use_minifasnet,
+        mediapipe_gesture_matched=gestural_passed,
+        ensemble_metrics=ensemble_metrics
     )

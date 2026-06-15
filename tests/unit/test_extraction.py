@@ -72,3 +72,12 @@ def test_extract_document_info_local_ocr_fallback():
     finally:
         if os.path.exists(dummy_path):
             os.remove(dummy_path)
+
+def test_indian_id_syntax_validation():
+    from src.agents.extraction import validate_id_syntax
+    # EPIC (Voter ID) format
+    assert validate_id_syntax("RAB5212386", date(2001, 1, 18), "Rishav Kumar") is True
+    # PAN Card format
+    assert validate_id_syntax("ABCDE1234F", date(1995, 8, 30), "Alice Smith") is True
+    # Aadhaar format
+    assert validate_id_syntax("123456789012", date(1990, 5, 15), "Jane Doe") is True

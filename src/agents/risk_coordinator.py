@@ -9,6 +9,42 @@ from src.schemas.models import (
     ConsolidatedRiskReport
 )
 
+def calculate_name_similarity(name1: str, name2: str) -> float:
+    """
+    Calculates name similarity ratio using fuzzy sequence matching, with
+    an adjustment for culturally common subset/middle name/father name inclusions,
+    and penalties for mismatched first names.
+    """
+    if not name1 or not name2:
+        return 0.0
+        
+    n1 = name1.lower().strip()
+    n2 = name2.lower().strip()
+    
+    # Base sequence matcher ratio
+    ratio = SequenceMatcher(None, n1, n2).ratio()
+    
+    w1 = n1.split()
+    w2 = n2.split()
+    if len(w1) > 0 and len(w2) > 0:
+        # Check first names similarity
+        first_ratio = SequenceMatcher(None, w1[0], w2[0]).ratio()
+        if first_ratio < 0.7:
+            # Scale down the ratio because the primary/first name is different
+            ratio = min(ratio, first_ratio)
+            
+        # Handle subset/token match (e.g. "Rishav Kumar" vs "Rishav Kumar Mishra")
+        if len(w1) >= 2 and len(w2) >= 2:
+            s1 = set(w1)
+            s2 = set(w2)
+            if s1.issubset(s2) or s2.issubset(s1):
+                # If they share the first word/name, we boost the match score
+                if w1[0] == w2[0]:
+                    ratio = max(ratio, 0.85)
+                
+    return ratio
+
+
 def coordinate_risk(
     extraction: ExtractionResult,
     liveness: LivenessResult,
@@ -86,9 +122,7 @@ def coordinate_risk(
 
     # 5. Identity & Name Matching Risk (Fuzzy matching)
     if applicant_name and extraction.name:
-        name1 = applicant_name.lower().strip()
-        name2 = extraction.name.lower().strip()
-        match_ratio = SequenceMatcher(None, name1, name2).ratio()
+        match_ratio = calculate_name_similarity(applicant_name, extraction.name)
         if match_ratio < 0.80:
             score += 45.0
             factors.append(f"Identity mismatch: Submitted name '{applicant_name}' does not match ID name '{extraction.name}' (Match: {match_ratio*100:.1f}%)")
@@ -124,7 +158,7 @@ def coordinate_risk(
         screening.risk_level == RiskLevel.HIGH or 
         extraction.forgery_detected or
         getattr(liveness, "face_match_decision", "MATCH") == "MISMATCH" or
-        (applicant_name and extraction.name and SequenceMatcher(None, applicant_name.lower().strip(), extraction.name.lower().strip()).ratio() < 0.5)):
+        (applicant_name and extraction.name and calculate_name_similarity(applicant_name, extraction.name) < 0.5)):
         final_level = RiskLevel.HIGH
     elif final_score >= 35 or screening.risk_level == RiskLevel.MEDIUM:
         final_level = RiskLevel.MEDIUM

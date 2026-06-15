@@ -10,10 +10,25 @@ from src.utils.helpers import get_mock_ml_flag, get_vllm_api_url
 def validate_id_syntax(id_number: str, dob: date, name: str) -> bool:
     """
     Deterministically checks if the ID number follows regional syntax rules
-    (starts with initials and contains the birthdate components).
+    (starts with initials and contains the birthdate components, OR matches common national ID formats like EPIC, PAN, Aadhaar, etc.).
     """
     import re
-    id_clean = id_number.strip().upper()
+    id_clean = id_number.strip().upper().replace(" ", "")
+
+    # Check common national/regional ID patterns to prevent false validation failures:
+    # 1. Indian Voter ID (EPIC): 3 letters followed by 7 digits (e.g. RAB5212386)
+    if re.match(r"^[A-Z]{3}\d{7}$", id_clean):
+        return True
+
+    # 2. PAN Card: 5 letters, 4 digits, 1 letter (e.g. ABCDE1234F)
+    if re.match(r"^[A-Z]{5}\d{4}[A-Z]$", id_clean):
+        return True
+
+    # 3. Aadhaar Card: 12 digits
+    if re.match(r"^\d{12}$", id_clean):
+        return True
+
+    # Default regional rule check
     # Extract initials of the name
     initials = "".join([part[0].upper() for part in name.split() if part])
     has_initial_prefix = any(id_clean.startswith(c) for c in initials) if initials else True
@@ -299,7 +314,7 @@ def extract_document_info(image_path: str) -> ExtractionResult:
 
     prompt = (
         "Extract the following fields from this ID card image: "
-        "1. name (full name as string) "
+        "1. name (Extract only the cardholder/applicant full name. Make sure NOT to include parent/spouse/relative names such as 'Father's Name', 'Husband's Name', or 'Mother's Name', and do NOT merge the cardholder's name with their relative's last name unless it is explicitly part of the cardholder's name field. On Indian cards, distinguish 'Name' from 'Father's Name' / 'Relative's Name'.) "
         "2. dob (date of birth in YYYY-MM-DD format) "
         "3. id_number (document reference number) "
         "4. ai_generated_check (Evaluate if this ID image shows signs of AI generation, digital manipulation, or photo editing. Return 'CLEAN', 'SUSPICIOUS', or 'AI_GENERATED') "
@@ -378,6 +393,8 @@ def extract_document_info(image_path: str) -> ExtractionResult:
             
             import re
             dob_match = re.search(r"\b(19\d{2}|20\d{2})[-/](0[1-9]|1[0-2])[-/](0[1-9]|[12]\d|3[01])\b", full_text)
+            if not dob_match:
+                dob_match = re.search(r"\b(0[1-9]|[12]\d|3[01])[-/](0[1-9]|1[0-2])[-/](19\d{2}|20\d{2})\b", full_text)
             
             name = "John Doe"
             dob = date(1985, 11, 23)
@@ -385,22 +402,49 @@ def extract_document_info(image_path: str) -> ExtractionResult:
             
             if dob_match:
                 from datetime import datetime
+                dob_str = dob_match.group(0).replace("/", "-")
                 try:
-                    dob = datetime.strptime(dob_match.group(0).replace("/", "-"), "%Y-%m-%d").date()
-                except Exception:
-                    pass
+                    dob = datetime.strptime(dob_str, "%Y-%m-%d").date()
+                except ValueError:
+                    try:
+                        dob = datetime.strptime(dob_str, "%d-%m-%d").date()
+                    except ValueError:
+                        pass
             
-            id_match = re.search(r"\b[A-Z]{2}\d{6,8}[A-Z]?\b", full_text)
+            # Match various ID formats:
+            # 1. EPIC Card: 3 letters + 7 digits
+            # 2. PAN Card: 5 letters + 4 digits + 1 letter
+            # 3. Aadhaar: 12 digits
+            # 4. Mock ID / Default regional: 2 letters + 6-8 digits + optional letter
+            id_match = re.search(r"\b[A-Z]{3}\d{7}\b", full_text)
+            if not id_match:
+                id_match = re.search(r"\b[A-Z]{5}\d{4}[A-Z]\b", full_text)
+            if not id_match:
+                id_match = re.search(r"\b\d{12}\b", full_text)
+            if not id_match:
+                id_match = re.search(r"\b[A-Z]{2}\d{6,8}[A-Z]?\b", full_text)
+                
             if id_match:
                 id_num = id_match.group(0)
             
-            name_candidates = []
+            # Try to find name with label first
             for line in text_lines:
-                if len(line) > 3 and line.replace(" ", "").isalpha() and not any(term in line.lower() for term in ["card", "identity", "republic", "state", "document"]):
-                    name_candidates.append(line)
-            if name_candidates:
-                name = name_candidates[0]
-
+                line_lower = line.lower()
+                if "name" in line_lower and "father" not in line_lower and "husband" not in line_lower and "mother" not in line_lower:
+                    cleaned = re.sub(r"^(name|full name|name of holder)\s*[:\-\.]?\s*", "", line, flags=re.IGNORECASE).strip()
+                    if len(cleaned) > 2:
+                        name = cleaned
+                        break
+            else:
+                # Fallback to candidates
+                name_candidates = []
+                for line in text_lines:
+                    clean_line = re.sub(r"[^a-zA-Z\s]", "", line).strip()
+                    if len(clean_line) > 3 and not any(term in clean_line.lower() for term in ["card", "identity", "republic", "state", "document", "father", "husband", "mother", "elector"]):
+                        name_candidates.append(clean_line)
+                if name_candidates:
+                    name = name_candidates[0]
+ 
             filename = image_path.lower()
             if "jane" in filename:
                 name = "Jane Doe"

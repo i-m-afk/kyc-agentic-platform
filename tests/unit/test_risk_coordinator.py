@@ -42,3 +42,22 @@ def test_coordinate_risk_failed_liveness():
     assert report.risk_level == RiskLevel.HIGH
     assert report.risk_score >= 70
     assert "liveness check failed" in report.explanation.lower()
+
+def test_calculate_name_similarity():
+    from src.agents.risk_coordinator import calculate_name_similarity
+    # Subset match (first names match, and one is a subset of the other)
+    assert calculate_name_similarity("Rishav Kumar", "Rishav Kumar Mishra") >= 0.85
+    # Sibling or parent mismatch (e.g. same surname/middle name but different first name)
+    assert calculate_name_similarity("Rakesh Kumar Mishra", "Rishav Kumar Mishra") < 0.80
+    # Completely different names
+    assert calculate_name_similarity("Alice Smith", "Bob Miller") < 0.50
+
+def test_coordinate_risk_fuzzy_name_match():
+    ext = ExtractionResult(name="Rishav Kumar Mishra", dob=date(2001, 1, 18), id_number="RAB5212386", confidence=0.95, syntax_valid=True)
+    live = LivenessResult(liveness_status=LivenessStatus.PASSED, confidence=0.98, spoof_probability=0.02, flags=[])
+    screen = ScreeningResult(match_found=False, watchlist_hits=[], adverse_media_hits=[], risk_level=RiskLevel.LOW)
+    
+    # applicant_name matches the subset "Rishav Kumar"
+    report = coordinate_risk(ext, live, screen, audit_log={}, applicant_name="Rishav Kumar")
+    assert report.risk_level == RiskLevel.LOW
+    assert "Identity mismatch" not in report.explanation

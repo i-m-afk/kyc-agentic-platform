@@ -37,22 +37,30 @@ pip install -r requirements.txt
     ```bash
     python3 src/training/train_liveness.py
     ```
-* **Extraction Model (Qwen2-VL)**: Start the OpenAI-compatible vLLM server to host the Vision model:
+* **Extraction Model (Qwen2.5-VL)**: Start the OpenAI-compatible vLLM server to host the Vision model. (Make sure to run this in your global/system environment where `vllm` is installed by running `deactivate` first if your local `venv` is active):
   ```bash
-  source venv/bin/activate
-  python3 -m vllm.entrypoints.openai.api_server \
-      --model Qwen/Qwen2-VL-7B-Instruct \
+  # Deactivate local venv to use global vllm installation
+  deactivate
+
+  # Spin up the vLLM server on port 8000
+  vllm serve Qwen/Qwen2.5-VL-7B-Instruct \
       --port 8000 \
       --trust-remote-code \
-      --dtype bfloat16
+      --dtype bfloat16 \
+      --max-model-len 32768 \
+      --limit-mm-per-prompt '{"image":2,"video":1}'
   ```
   *(Wait ~60 seconds for the vLLM server to log `Uvicorn running on http://localhost:8000` before running the pipeline).*
 
 ### Step 4: Run the Streamlit Dashboard
-Start the dashboard in **production mode** (utilizing the real vLLM and PyTorch models instead of mock rules):
+Start the dashboard in **production mode** (utilizing the real vLLM and PyTorch models instead of mock rules). Note that we disable CORS and XSRF protection so that Streamlit can be accessed through proxy environments (like Jupyter Server Proxy):
 ```bash
 # Set MOCK_ML to false to enable real model execution
-MOCK_ML=false PYTHONPATH=. streamlit run src/app.py --server.port 8501 --server.address 0.0.0.0
+MOCK_ML=false PYTHONPATH=. streamlit run src/app.py \
+    --server.port 8501 \
+    --server.address 0.0.0.0 \
+    --server.enableCORS=false \
+    --server.enableXsrfProtection=false
 ```
 
 ### Step 5: Accessing the Dashboard & Running App
@@ -166,19 +174,21 @@ pip install -r requirements.txt
 ```
 
 ### Step B: Serve the Vision LLM using vLLM on ROCm
-In a new Jupyter terminal tab, start the local vLLM OpenAI-compatible server to host the extraction model (e.g. Qwen2-VL):
+In a new Jupyter terminal tab, start the local vLLM OpenAI-compatible server to host the extraction model (Qwen2.5-VL). Run this in the system environment where `vllm` is installed (deactivate `venv` if active):
 ```bash
-source venv/bin/activate
+# Deactivate local venv to use global vllm installation
+deactivate
 
-# Verify MI300X visibility
-rocm-smi
+# Verify GPU visibility
+rocm-smi || nvidia-smi
 
 # Spin up the vLLM server on port 8000
-python -m vllm.entrypoints.openai.api_server \
-    --model Qwen/Qwen2-VL-7B-Instruct \
+vllm serve Qwen/Qwen2.5-VL-7B-Instruct \
     --port 8000 \
     --trust-remote-code \
-    --dtype bfloat16
+    --dtype bfloat16 \
+    --max-model-len 32768 \
+    --limit-mm-per-prompt '{"image":2,"video":1}'
 ```
 
 ### Step C: Train the Liveness Model (Anti-Spoofing)
@@ -192,12 +202,16 @@ python -m vllm.entrypoints.openai.api_server \
    ```
 
 ### Step D: Run the Streamlit Dashboard
-In another Jupyter terminal tab, run the Streamlit review dashboard:
+In another Jupyter terminal tab, run the Streamlit review dashboard. Disable CORS and XSRF protection to allow proxied access:
 ```bash
 source venv/bin/activate
 
 # Launch dashboard on port 8501
-streamlit run src/app.py --server.port 8501 --server.address 0.0.0.0
+streamlit run src/app.py \
+    --server.port 8501 \
+    --server.address 0.0.0.0 \
+    --server.enableCORS=false \
+    --server.enableXsrfProtection=false
 ```
 
 ### Step E: Access the UI via Jupyter Server Proxy

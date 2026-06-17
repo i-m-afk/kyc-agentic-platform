@@ -11,9 +11,9 @@ The platform ingests a user's ID card image and a 3-second liveness face video, 
 If you are setting up or running the project for the first time, follow this step-by-step guide.
 
 ### Step 1: Clone the Repository
-Clone the repository using the pre-authenticated GitHub Personal Access Token (PAT):
+Clone the repository:
 ```bash
-git clone https://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@github.com/i-m-afk/kyc-agentic-platform.git
+git clone https://github.com/i-m-afk/kyc-agentic-platform.git
 cd kyc-agentic-platform
 ```
 

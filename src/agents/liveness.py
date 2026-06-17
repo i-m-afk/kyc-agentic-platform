@@ -49,7 +49,7 @@ _arcface_app = None
 _onnx_providers = None
 
 def _get_onnx_providers():
-    """Detect available ONNX Runtime execution providers once and cache the result."""
+    """Detect available ONNX Runtime execution providers once, test them, and cache the result."""
     global _onnx_providers
     if _onnx_providers is not None:
         return _onnx_providers
@@ -58,12 +58,29 @@ def _get_onnx_providers():
     try:
         import onnxruntime as ort
         avail = ort.get_available_providers()
-        # Only attempt GPU providers if the runtime actually reports them as available
         gpu_provs = [p for p in ['ROCMExecutionProvider', 'MIGraphXExecutionProvider', 'CUDAExecutionProvider'] if p in avail]
-        if gpu_provs:
-            _onnx_providers = gpu_provs + ['CPUExecutionProvider']
-    except Exception:
-        pass
+        
+        working_gpu_provs = []
+        for prov in gpu_provs:
+            try:
+                # Test if the provider actually initializes by creating a dummy session.
+                # A working provider will raise an InvalidArgument for empty protobuf/model.
+                # A broken provider (e.g. missing ROCm libraries) will raise a load/runtime error.
+                ort.InferenceSession(b'', providers=[prov])
+                working_gpu_provs.append(prov)
+            except Exception as e:
+                # Check if it succeeded to initialize but failed on the empty protobuf.
+                err_msg = str(e)
+                if "No graph was found" in err_msg or "protobuf" in err_msg.lower():
+                    working_gpu_provs.append(prov)
+                else:
+                    # Provider failed to load, skip it
+                    print(f"ONNX Runtime provider {prov} registered but failed to load: {err_msg}")
+                    
+        if working_gpu_provs:
+            _onnx_providers = working_gpu_provs + ['CPUExecutionProvider']
+    except Exception as e:
+        print(f"Error detecting ONNX execution providers: {e}")
     return _onnx_providers
 
 # --- Cached Haar cascade classifiers (loaded once) ---
@@ -608,7 +625,10 @@ def compute_face_similarity(id_image_path: Optional[str], video_path: str, frame
                         (cv2.ROTATE_90_COUNTERCLOCKWISE, "90_CCW")
                     ]
                     
+                    is_aligned = "aligned" in id_name
                     for rot_code, rot_name in rotations:
+                        if rot_code is not None and is_aligned:
+                            continue  # skip rotated versions if the card is already aligned and upright
                         if rot_code is None:
                             rotated_id = id_img.copy()
                         else:
@@ -701,8 +721,11 @@ def compute_face_similarity(id_image_path: Optional[str], video_path: str, frame
                         (cv2.ROTATE_90_COUNTERCLOCKWISE, "90_CCW")
                     ]
                     
+                    is_aligned = "aligned" in id_name
                     id_img_rgb = cv2.cvtColor(id_img, cv2.COLOR_BGR2RGB)
                     for rot_code, rot_name in rotations:
+                        if rot_code is not None and is_aligned:
+                            continue  # skip rotated versions if the card is already aligned and upright
                         if rot_code is None:
                             rotated_id = id_img_rgb.copy()
                         else:
@@ -764,7 +787,10 @@ def compute_face_similarity(id_image_path: Optional[str], video_path: str, frame
                     (cv2.ROTATE_90_COUNTERCLOCKWISE, "90_CCW")
                 ]
                 
+                is_aligned = "aligned" in id_name
                 for rot_code, rot_name in rotations:
+                    if rot_code is not None and is_aligned:
+                        continue  # skip rotated versions if the card is already aligned and upright
                     if rot_code is None:
                         rotated_gray = id_gray.copy()
                         rotated_color = id_img.copy()
@@ -907,9 +933,24 @@ def verify_liveness(
     if expected_gesture in (None, "", "None"):
         expected_gesture = None
     if status_callback:
-        status_callback("liveness", "Running", "Starting liveness analysis & computing face similarity...")
-    # 1. Compute face similarity
-    similarity_score, face_match_decision, id_face_path, live_face_path = compute_face_similarity(id_image_path, video_path)
+        status_callback("liveness", "Running", "Starting liveness analysis...")
+
+    # Extract frames ONCE if not in mock mode and video file exists
+    frames = None
+    if not get_mock_ml_flag() and os.path.exists(video_path):
+        if status_callback:
+            status_callback("liveness", "Running", "Extracting video frames for analysis...")
+        try:
+            frames = extract_frames(video_path, num_frames=12)
+        except Exception as e:
+            raise ValueError(f"Frame extraction failed: {str(e)}")
+        if not frames:
+            raise ValueError("Could not extract any valid frames from the video.")
+
+    # 1. Compute face similarity using the pre-extracted frames
+    similarity_score, face_match_decision, id_face_path, live_face_path = compute_face_similarity(
+        id_image_path, video_path, frames=frames
+    )
 
     # 2. Check if we should use local Mock mode
     if get_mock_ml_flag():
@@ -1121,16 +1162,17 @@ def verify_liveness(
             )
         raise FileNotFoundError(f"Liveness video file not found at {video_path}")
 
-    # Extract frames for CV calculations
-    if status_callback:
-        status_callback("liveness", "Running", "Extracting 12 video frames for verification...")
-    try:
-        frames = extract_frames(video_path, num_frames=12)
-    except Exception as e:
-        raise ValueError(f"Frame extraction failed: {str(e)}")
-
+    # Extract frames for CV calculations if not already pre-extracted
     if not frames:
-        raise ValueError("Could not extract any valid frames from the video.")
+        if status_callback:
+            status_callback("liveness", "Running", "Extracting 12 video frames for verification...")
+        try:
+            frames = extract_frames(video_path, num_frames=12)
+        except Exception as e:
+            raise ValueError(f"Frame extraction failed: {str(e)}")
+
+        if not frames:
+            raise ValueError("Could not extract any valid frames from the video.")
 
     # Gestural check: scan frame-by-frame for the active gesture frame
     gestural_passed = False

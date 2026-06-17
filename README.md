@@ -66,7 +66,7 @@ MOCK_ML=false PYTHONPATH=. streamlit run src/app.py \
 ### Step 5: Accessing the Dashboard & Running App
 1. Access the UI via your browser (e.g. replacing `/lab` with `/proxy/8501/` in your Jupyter URL).
 2. Because of Streamlit's file uploader proxy limitations, **do not upload files directly**. Instead, select the preloaded files from the **"Choose from uploads/ folder"** dropdown in the sidebar!
-3. Select an applicant (e.g., `Rishav Kumar` or `Charlie Davis`) and click **Run KYC Pipeline** to trigger real-time AI document extraction, deepfake/liveness check, and screening!
+3. Select an applicant (e.g., `Alice Smith` or `Charlie Davis`) and click **Run KYC Pipeline** to trigger real-time AI document extraction, deepfake/liveness check, and screening!
 
 ---
 
@@ -74,23 +74,27 @@ MOCK_ML=false PYTHONPATH=. streamlit run src/app.py \
 
 The pipeline uses a functional, stateless multi-agent topology to avoid state-machine overhead and maintain deterministic execution:
 
-1.  **Extraction Agent (Vision-Language)**:
-    * Hosts **Qwen2-VL-7B-Instruct** using an optimized **vLLM** endpoint on ROCm.
-    * Extracts document data (Name, DOB, ID Number) into Pydantic models.
-    * Performs **Zero-Shot Digital Forgery & AI Generation Checks** (evaluating text alignments, font anomalies, warping, and texture discrepancies).
-2.  **Liveness Agent (Anti-Spoofing)**:
-    * Executes a custom-trained **MobileNetV3 PyTorch Classifier** on AMD GPU hardware.
-    * Runs physical spoof detection, device-glare analysis, and deepfake anomaly identification on video frames.
-    * Validates user compliance against randomized gestural challenges (e.g. "3 fingers near cheek") using **MediaPipe Hands** (with a contour-based OpenCV fallback).
+1.  **Extraction Agent (Vision-Language & CV Forensics)**:
+    * Hosts **Qwen2.5-VL-7B-Instruct** using an optimized **vLLM** endpoint on ROCm (with a local EasyOCR fallback).
+    * Extracts document data (Name, DOB, ID Number) into validated Pydantic models.
+    * Performs programmatic validation of ID syntax and measures card legibility.
+    * Runs **Zero-Shot Digital Forgery & AI Generation Checks** using parallelized computer vision diagnostics:
+      * **Error Level Analysis (ELA)**: Detects compression rate inconsistencies to flag localized image edits.
+      * **Fast Fourier Transform (FFT) Spectral Analysis**: Analyzes frequency spikes to catch periodic grids native to GAN/diffusion generated images.
+2.  **Liveness Agent (Anti-Spoofing & Biometrics)**:
+    * Executes a custom-trained **MobileNetV3 PyTorch Classifier** on AMD GPU hardware to detect physical presentation spoofs (such as printed photos or iPad replays).
+    * Validates compliance against randomized gestural challenges (e.g. "3 fingers near cheek") using **MediaPipe Hands** (with a contour-based OpenCV fallback).
+    * Runs **FaceNet / ArcFace** to perform 1:1 biometric facial comparison between the ID card photo and the live video face.
+    * Captures sub-visual physiological biometrics:
+      * **Green-channel rPPG (Remote Photoplethysmography)**: Measures pulse wave variation to verify living skin tissue.
+      * **Dense Optical Flow (Farneback)**: Analyzes micro-warping boundary seams to flag temporal face-swap overlays.
 3.  **Screener Agent (Compliance)**:
-    * Performs multi-target watchlist (PEP / Sanctions) and Adverse Media matches.
-    * Screens **both** the submitted applicant name AND the extracted ID card name if they differ.
-    * Tags every hit with a `matched_on` attribute (`submitted_name` or `extracted_name`) for audit transparency.
+    * Performs PEP, OFAC, and Adverse Media screening on **both** the submitted applicant name and the extracted ID card name.
+    * Tags every hit with a `matched_on` attribute for compliance transparency.
 4.  **Risk Coordinator Agent (Consolidator)**:
     * Combines all outputs in a single consensus calculation.
-    * Runs **Fuzzy Name Similarity Matching** (using sequence matching ratio) between the user-inputted name and the ID document name.
     * Features a dual **Cognitive LLM Decision Coordinator** and **Rule-Based Fallback** mechanism. It attempts to send formatted biometric and compliance telemetry to local vLLM models for semantic coordination, and gracefully falls back to deterministic rule scoring if the server is offline.
-    * Assigns explainable risk flags, calculates the consolidated 0-100 score, and decides the application status (LOW/MEDIUM/HIGH).
+    * Assigns explainable risk flags, calculates the consolidated 0-100 score, and decides the final application status (LOW/MEDIUM/HIGH).
 
 ### Architecture Data Flow
 
@@ -100,22 +104,26 @@ graph TD
     Start([KYC Onboarding Request]) --> InputDoc[ID Card Image]
     Start --> InputVid[Liveness Video]
 
+    %% ID Alignment
+    InputDoc --> AlignID[YOLOv8 ID Alignment]
+
     %% Parallel Processing
-    subgraph "Parallel ML Inference (ROCm Optimized)"
-        InputDoc --> AgentExt[📄 Extraction Agent <br/> Qwen2-VL via vLLM]
-        InputVid --> AgentLive[🎥 Liveness Agent <br/> PyTorch MobileNetV3]
+    subgraph "Parallel ML & CV Telemetry Pipeline"
+        AlignID --> AgentExt[📄 Extraction Agent<br/>Qwen2.5-VL via vLLM]
+        InputVid --> AgentLive[🎥 Liveness Agent<br/>PyTorch MobileNetV3]
+        AlignID -.-> |"Aligned Card Face Crop"| AgentLive
     end
 
     %% Agent Outputs
-    AgentExt --> ExtRes["Extraction Result<br/>- Name, DOB, ID Num<br/>- Forgery/AI Check"]
-    AgentLive --> LiveRes["Liveness Result<br/>- Physical Spoof<br/>- Gestural Challenge<br/>- Deepfake Anomalies"]
+    AgentExt --> ExtRes["Extraction Result<br/>- Name, DOB, ID Num<br/>- Digital Forgery Check ELA/FFT"]
+    AgentLive --> LiveRes["Liveness Result<br/>- Physical Spoof Classifier<br/>- MediaPipe Gestural Challenge<br/>- 1:1 Face Similarity Match FaceNet<br/>- Deepfake Telemetry rPPG & Optical Flow"]
 
     %% Screening
     ExtRes --> AgentScreen[🔍 Screening Agent]
     Start -.-> |"Submitted Name"| AgentScreen
     
     %% Screening Output
-    AgentScreen --> ScreenRes["Screening Result<br/>- Hits tagged with 'matched_on'<br/>- Risk Level"]
+    AgentScreen --> ScreenRes["Screening Result<br/>- Hits PEP/OFAC/Adverse Media<br/>- Matched on: submitted/extracted"]
 
     %% Consolidation
     ExtRes --> AgentRisk[🛡️ Risk Coordinator Agent]
@@ -125,8 +133,8 @@ graph TD
 
     %% Decision
     AgentRisk --> Report[Consolidated Risk Report]
-    Report --> Score["Risk Score (0-100)<br/>& Risk Level (L/M/H)"]
-    Report --> Explanation["Explainable Factors<br/>(e.g., Name Mismatch, Spoof Detected)"]
+    Report --> Score["Risk Score 0-100<br/>& Risk Level Low/Med/High"]
+    Report --> Explanation["VLM Explainable Rationale<br/>Audit Transcript Log"]
 ```
 
 ---
@@ -138,18 +146,21 @@ graph TD
 │   └── train_liveness_model.ipynb   # Liveness model training notebook
 ├── src/
 │   ├── agents/                      # Stateless agent modules
-│   │   ├── extraction.py
-│   │   ├── liveness.py
-│   │   ├── screener.py
-│   │   └── risk_coordinator.py
+│   │   ├── extraction.py            # YOLOv8 crop/warp & VLM text extraction
+│   │   ├── liveness.py              # CNN classifier, MediaPipe, FaceNet, rPPG, Optical Flow
+│   │   ├── screener.py              # PEP/watchlist & adverse media matcher
+│   │   └── risk_coordinator.py      # Risk scorecard VLM compiler & fallbacks
 │   ├── schemas/                     # Pydantic validation schemas
 │   │   └── models.py
 │   ├── training/                    # Model training scripts
 │   │   └── train_liveness.py
 │   ├── utils/                       # DB mock and video handling helpers
-│   │   └── helpers.py
+│   │   ├── ai_image_forensics.py    # Parallelized CV-based image forensics
+│   │   ├── db.py                    # Mock watchlist & adverse media database
+│   │   └── helpers.py               # Env configuration and download utilities
 │   └── app.py                       # Streamlit dashboard interface
-└── README.md                        # This file
+├── tests/                           # Integration and unit tests
+└── README.md                        # Project documentation
 ```
 
 ---

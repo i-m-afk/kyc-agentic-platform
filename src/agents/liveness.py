@@ -1227,8 +1227,24 @@ def verify_liveness(
                 spoof_probs.append(probs[0][1].item())
 
         avg_spoof_prob = sum(spoof_probs) / len(spoof_probs)
-        physical_spoof = avg_spoof_prob >= 0.5
-        digital_deepfake = avg_spoof_prob > 0.7 or fft_grid or flow_mismatch
+
+        # --- Ensemble majority vote across 4 independent signals ---
+        # The DL model alone cannot override three mathematical checks that
+        # all say "real". Each signal casts one vote; majority wins.
+        dl_says_spoof   = avg_spoof_prob >= 0.55   # vote 1: DL model
+        fft_says_spoof  = fft_grid                  # vote 2: FFT grid artifact
+        flow_says_spoof = flow_mismatch             # vote 3: optical flow warp
+        rppg_says_spoof = not rppg_pulse            # vote 4: cardiac signal absent
+
+        spoof_vote_count = sum([dl_says_spoof, fft_says_spoof, flow_says_spoof, rppg_says_spoof])
+
+        # Physical spoof: DL model flags it AND at least one mathematical signal agrees
+        physical_spoof = dl_says_spoof and spoof_vote_count >= 2
+        # Digital deepfake: at least 2 of the 4 signals must agree it's synthetic
+        digital_deepfake = spoof_vote_count >= 2
+
+        # Recalibrate reported probability to reflect ensemble confidence
+        avg_spoof_prob = spoof_vote_count / 4.0 if digital_deepfake else avg_spoof_prob * (spoof_vote_count / 4.0)
     else:
         # In hybrid Mock Mode with real files, simulate DL prediction based on filename or CV results
         physical_spoof = not rppg_pulse and not fft_grid

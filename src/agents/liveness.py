@@ -538,7 +538,12 @@ def compute_face_similarity(id_image_path: Optional[str], video_path: str, frame
                             
                         video_embs = []
                         saved_live_face = False
-                        for frame in frames:
+                        # Downsample frames to max 3 frames for faster CPU/non-GPU similarity extraction
+                        arcface_frames = frames
+                        if len(frames) > 3:
+                            indices = np.linspace(0, len(frames) - 1, 3, dtype=int)
+                            arcface_frames = [frames[i] for i in indices]
+                        for frame in arcface_frames:
                             # Frame is in RGB from extraction, convert to BGR for InsightFace
                             frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
                             vid_faces = arcface_app.get(frame_bgr)
@@ -594,7 +599,12 @@ def compute_face_similarity(id_image_path: Optional[str], video_path: str, frame
                         
                         video_embs = []
                         saved_live_face = False
-                        for frame in frames:
+                        # Downsample frames to max 3 frames for faster CPU/non-GPU similarity extraction
+                        facenet_frames = frames
+                        if len(frames) > 3:
+                            indices = np.linspace(0, len(frames) - 1, 3, dtype=int)
+                            facenet_frames = [frames[i] for i in indices]
+                        for frame in facenet_frames:
                             vid_face = align_face(frame)
                             if vid_face is not None:
                                 # Save first valid live face crop

@@ -63,8 +63,14 @@ def get_cached_arcface():
             except Exception:
                 pass
                 
-            _arcface_app = FaceAnalysis(name='buffalo_l', providers=providers)
-            _arcface_app.prepare(ctx_id=ctx, det_size=(640, 640))
+            try:
+                _arcface_app = FaceAnalysis(name='buffalo_l', providers=providers)
+                _arcface_app.prepare(ctx_id=ctx, det_size=(640, 640))
+            except Exception as gpu_err:
+                print(f"Failed to prepare InsightFace with GPU execution providers {providers}: {gpu_err}")
+                print("Retrying InsightFace initialization with CPUExecutionProvider fallback...")
+                _arcface_app = FaceAnalysis(name='buffalo_l', providers=['CPUExecutionProvider'])
+                _arcface_app.prepare(ctx_id=-1, det_size=(640, 640))
         except Exception as e:
             print(f"Failed to prepare InsightFace: {e}")
             _arcface_app = None

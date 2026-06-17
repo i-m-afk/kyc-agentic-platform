@@ -285,7 +285,7 @@ if st.session_state.selected_app_id:
     # Run pipeline button
     col1, col2 = st.columns([1, 4])
     with col1:
-        run_btn = st.button("🚀 Run KYC Pipeline", use_container_width=True)
+        run_btn = st.button("🚀 Run KYC Pipeline", width="stretch")
     with col2:
         if app["pipeline_run"]:
             st.success("Pipeline results loaded from previous run.")
@@ -451,7 +451,7 @@ if st.session_state.selected_app_id:
             if os.path.exists(app["id_image"]):
                 try:
                     img = Image.open(app["id_image"])
-                    st.image(img, caption="Raw ID Document Upload", use_container_width=True)
+                    st.image(img, caption="Raw ID Document Upload", width="stretch")
                 except Exception:
                     st.caption("ID Document preview unavailable.")
             else:
@@ -463,7 +463,7 @@ if st.session_state.selected_app_id:
             if aligned_id_path and os.path.exists(aligned_id_path):
                 try:
                     img_aligned = Image.open(aligned_id_path)
-                    st.image(img_aligned, caption="Aligned & Rectified ID Document", use_container_width=True)
+                    st.image(img_aligned, caption="Aligned & Rectified ID Document", width="stretch")
                 except Exception:
                     st.caption("Aligned document preview unavailable.")
                 
@@ -553,7 +553,7 @@ if st.session_state.selected_app_id:
                     if id_face_path and os.path.exists(id_face_path):
                         try:
                             img_id_face = Image.open(id_face_path)
-                            st.image(img_id_face, caption="Face from ID", use_container_width=True)
+                            st.image(img_id_face, caption="Face from ID", width="stretch")
                         except Exception:
                             st.caption("ID face crop unavailable.")
                     else:
@@ -562,7 +562,7 @@ if st.session_state.selected_app_id:
                     if live_face_path and os.path.exists(live_face_path):
                         try:
                             img_live_face = Image.open(live_face_path)
-                            st.image(img_live_face, caption="Face from Video", use_container_width=True)
+                            st.image(img_live_face, caption="Face from Video", width="stretch")
                         except Exception:
                             st.caption("Live face crop unavailable.")
                     else:
@@ -615,9 +615,9 @@ if st.session_state.selected_app_id:
         
         dec_col1, dec_col2, dec_col3 = st.columns([1, 1, 3])
         with dec_col1:
-            approve_btn = st.button("✅ Approve Application", use_container_width=True, type="primary")
+            approve_btn = st.button("✅ Approve Application", width="stretch", type="primary")
         with dec_col2:
-            escalate_btn = st.button("🚨 Escalate Application", use_container_width=True)
+            escalate_btn = st.button("🚨 Escalate Application", width="stretch")
             
         if approve_btn:
             app["status"] = ApplicationStatus.APPROVED

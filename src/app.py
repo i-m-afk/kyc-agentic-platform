@@ -338,7 +338,7 @@ if st.session_state.selected_app_id:
                         badge = "<span style='color: #10b981; font-weight: bold; font-size: 0.85rem;'>Completed</span>"
                     else:
                         icon = "❌"
-                        badge = f"<span style='color: #ef4444; font-weight: bold; font-size: 0.85rem;'>Failed: {status}</span>"
+                        badge = f"<span style='color: #ef4444; font-weight: bold; font-size: 0.85rem;'>{status}</span>"
                     
                     detail_str = f"<br/><span style='color: #4b5563; font-size: 0.8rem; margin-left: 1.5rem;'>└─ {detail}</span>" if detail and status == "Running" else ""
                     lines.append(f"<div style='margin-bottom: 0.6rem; line-height: 1.4;'>{icon} <b>{name}</b> — {badge}{detail_str}</div>")

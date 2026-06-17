@@ -70,3 +70,37 @@ def test_coordinate_risk_decision_mode():
     # Under MOCK_ML, decision mode must be RULE_BASED fallback
     report = coordinate_risk(ext, live, screen, audit_log={})
     assert report.coordinator_decision_mode == "RULE_BASED"
+
+
+def test_coordinate_risk_with_visual_assets(tmp_path):
+    ext = ExtractionResult(name="Alice Smith", dob=date(1995, 8, 30), id_number="AS950830", confidence=0.95)
+    live = LivenessResult(
+        liveness_status=LivenessStatus.PASSED,
+        confidence=0.98,
+        spoof_probability=0.02,
+        flags=[]
+    )
+    live.cropped_id_face_path = str(tmp_path / "id_face.jpg")
+    live.cropped_live_face_path = str(tmp_path / "live_face.jpg")
+    screen = ScreeningResult(match_found=False, watchlist_hits=[], adverse_media_hits=[], risk_level=RiskLevel.LOW)
+    
+    # Create dummy files
+    with open(tmp_path / "id_face.jpg", "wb") as f:
+        f.write(b"dummy_id_face_bytes")
+    with open(tmp_path / "live_face.jpg", "wb") as f:
+        f.write(b"dummy_live_face_bytes")
+    with open(tmp_path / "aligned_id.jpg", "wb") as f:
+        f.write(b"dummy_aligned_id_bytes")
+        
+    report = coordinate_risk(
+        extraction=ext,
+        liveness=live,
+        screening=screen,
+        audit_log={},
+        applicant_name="Alice Smith",
+        id_image_path="alice_smith_card.jpg",
+        liveness_video_path="alice_smith_live.mp4",
+        aligned_id_image_path=str(tmp_path / "aligned_id.jpg")
+    )
+    assert isinstance(report, ConsolidatedRiskReport)
+    assert report.risk_level == RiskLevel.LOW

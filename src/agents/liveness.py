@@ -51,6 +51,33 @@ else:
     class LivenessModel:
         pass
 
+# Global model cache to eliminate load weight latencies
+_MODELS_CACHE = {}
+
+def get_cached_facenet(device):
+    global _MODELS_CACHE
+    if 'facenet' not in _MODELS_CACHE:
+        print("Initializing and caching FaceNet (InceptionResnetV1) model...")
+        model = InceptionResnetV1(pretrained='vggface2').eval().to(device)
+        _MODELS_CACHE['facenet'] = model
+    else:
+        _MODELS_CACHE['facenet'] = _MODELS_CACHE['facenet'].to(device)
+    return _MODELS_CACHE['facenet']
+
+def get_cached_liveness_model(model_path: str, device) -> LivenessModel:
+    global _MODELS_CACHE
+    cache_key = f"liveness_{model_path}"
+    if cache_key not in _MODELS_CACHE:
+        print(f"Loading and caching LivenessModel from {model_path}...")
+        model = LivenessModel()
+        model.load_state_dict(torch.load(model_path, map_location=device))
+        model.to(device)
+        model.eval()
+        _MODELS_CACHE[cache_key] = model
+    else:
+        _MODELS_CACHE[cache_key] = _MODELS_CACHE[cache_key].to(device)
+    return _MODELS_CACHE[cache_key]
+
 def extract_frames(video_path: str, num_frames: int = 5) -> List[np.ndarray]:
     """Helper to extract evenly spaced frames from a video using OpenCV."""
     if not OPENCV_AVAILABLE:
@@ -108,16 +135,16 @@ def align_face(image: np.ndarray) -> np.ndarray:
             eye1_center = (eyes[0][0] + eyes[0][2] // 2, eyes[0][1] + eyes[0][3] // 2)
             eye2_center = (eyes[1][0] + eyes[1][2] // 2, eyes[1][1] + eyes[1][3] // 2)
 
-            # Midpoint between eyes
+            # Midpoint between eyes (convert to floats for cv2.getRotationMatrix2D parsing)
             midpoint = (
-                (eye1_center[0] + eye2_center[0]) // 2,
-                (eye1_center[1] + eye2_center[1]) // 2
+                float((eye1_center[0] + eye2_center[0]) / 2),
+                float((eye1_center[1] + eye2_center[1]) / 2)
             )
 
             # Compute rotation angle
             dy = eye2_center[1] - eye1_center[1]
             dx = eye2_center[0] - eye1_center[0]
-            angle = np.degrees(np.arctan2(dy, dx))
+            angle = float(np.degrees(np.arctan2(dy, dx)))
 
             # Rotate face
             rot_mat = cv2.getRotationMatrix2D(midpoint, angle, 1.0)
@@ -150,10 +177,10 @@ def cosine_similarity(emb1: np.ndarray, emb2: np.ndarray) -> float:
         return 0.0
     return float(dot_product / (norm_a * norm_b))
 
-def estimate_fingers_mediapipe(frames: List[np.ndarray]) -> int:
-    """Estimate finger count using MediaPipe Hands."""
+def estimate_fingers_mediapipe(frames: List[np.ndarray]) -> Tuple[List[int], List[float]]:
+    """Estimate finger count and hand-face occlusion ratio for each frame using MediaPipe Hands."""
     if not frames or not MEDIAPIPE_AVAILABLE:
-        return 0
+        return [0] * len(frames), [0.0] * len(frames)
     import mediapipe as mp
     mp_hands = mp.solutions.hands
     
@@ -164,45 +191,67 @@ def estimate_fingers_mediapipe(frames: List[np.ndarray]) -> int:
         min_detection_confidence=0.3
     ) as hands:
         finger_counts = []
+        occlusion_ratios = []
         for frame in frames:
             # MediaPipe expects RGB
             results = hands.process(frame)
             if not results.multi_hand_landmarks:
+                finger_counts.append(0)
+                occlusion_ratios.append(0.0)
                 continue
                 
+            frame_fingers = 0
+            # Calculate hand bounding box
+            lm = results.multi_hand_landmarks[0].landmark
+            fh, fw = frame.shape[:2]
+            hx_min = min(p.x for p in lm) * fw
+            hx_max = max(p.x for p in lm) * fw
+            hy_min = min(p.y for p in lm) * fh
+            hy_max = max(p.y for p in lm) * fh
+            
+            # Detect face using Haar Cascade
+            gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+            face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+            faces = face_cascade.detectMultiScale(gray, 1.1, 4)
+            
+            occlusion_ratio = 0.0
+            if len(faces) > 0:
+                fx, fy, f_w, f_h = sorted(faces, key=lambda f: f[2]*f[3], reverse=True)[0]
+                ix_min = max(fx, hx_min)
+                iy_min = max(fy, hy_min)
+                ix_max = min(fx + f_w, hx_max)
+                iy_max = min(fy + f_h, hy_max)
+                
+                if ix_min < ix_max and iy_min < iy_max:
+                    intersection = (ix_max - ix_min) * (iy_max - iy_min)
+                    hand_area = (hx_max - hx_min) * (hy_max - hy_min)
+                    if hand_area > 0:
+                        occlusion_ratio = float(intersection / hand_area)
+            
             for hand_landmarks in results.multi_hand_landmarks:
-                # Get landmarks
-                lm = hand_landmarks.landmark
-                
-                # Check fingers
+                lm_hand = hand_landmarks.landmark
                 fingers_up = 0
-                
-                # Index finger: TIP (8) vs PIP (6)
-                if lm[8].y < lm[6].y:
+                if lm_hand[8].y < lm_hand[6].y:
                     fingers_up += 1
-                # Middle finger: TIP (12) vs PIP (10)
-                if lm[12].y < lm[10].y:
+                if lm_hand[12].y < lm_hand[10].y:
                     fingers_up += 1
-                # Ring finger: TIP (16) vs PIP (14)
-                if lm[16].y < lm[14].y:
+                if lm_hand[16].y < lm_hand[14].y:
                     fingers_up += 1
-                # Pinky finger: TIP (20) vs PIP (18)
-                if lm[20].y < lm[18].y:
+                if lm_hand[20].y < lm_hand[18].y:
                     fingers_up += 1
-                # Thumb: TIP (4) vs IP (3)
                 def dist(p1, p2):
                     return ((p1.x - p2.x)**2 + (p1.y - p2.y)**2)**0.5
-                if dist(lm[4], lm[0]) > dist(lm[3], lm[0]):
+                if dist(lm_hand[4], lm_hand[0]) > dist(lm_hand[3], lm_hand[0]):
                     fingers_up += 1
-                    
-                finger_counts.append(fingers_up)
+                frame_fingers = max(frame_fingers, fingers_up)
+            
+            finger_counts.append(frame_fingers)
+            occlusion_ratios.append(occlusion_ratio)
                 
-        if not finger_counts:
-            return 0
-        return int(np.percentile(finger_counts, 50))
+        return finger_counts, occlusion_ratios
 
-def estimate_fingers(frames: List[np.ndarray]) -> int:
-    """Combines MediaPipe and OpenCV methods to estimate finger count."""
+def estimate_fingers(frames: List[np.ndarray]) -> Tuple[List[int], List[float]]:
+    """Combines MediaPipe and OpenCV methods to estimate finger count and occlusion ratio for each frame."""
     if MEDIAPIPE_AVAILABLE:
         try:
             return estimate_fingers_mediapipe(frames)
@@ -210,12 +259,13 @@ def estimate_fingers(frames: List[np.ndarray]) -> int:
             print(f"MediaPipe finger estimation failed: {e}. Falling back to OpenCV skin segmentation.")
     return estimate_fingers_opencv(frames)
 
-def estimate_fingers_opencv(frames: List[np.ndarray]) -> int:
-    """Estimate finger count from frames using skin color thresholding and contours."""
+def estimate_fingers_opencv(frames: List[np.ndarray]) -> Tuple[List[int], List[float]]:
+    """Estimate finger count and hand-face occlusion ratio for each frame using skin color thresholding and contours."""
     if not frames:
-        return 0
+        return [], []
 
     finger_counts = []
+    occlusion_ratios = []
     for frame in frames:
         # Convert RGB to HSV
         hsv = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
@@ -229,14 +279,36 @@ def estimate_fingers_opencv(frames: List[np.ndarray]) -> int:
         
         contours, _ = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
         if not contours:
+            finger_counts.append(0)
+            occlusion_ratios.append(0.0)
             continue
             
         sorted_contours = sorted(contours, key=cv2.contourArea, reverse=True)
         if len(sorted_contours) < 2:
+            finger_counts.append(0)
+            occlusion_ratios.append(0.0)
             continue
             
-        # Assume second largest contour is the hand (largest is usually face/background)
+        # Assume largest is face, second largest is hand
+        face_contour = sorted_contours[0]
         hand_contour = sorted_contours[1]
+        
+        fx, fy, fw, fh = cv2.boundingRect(face_contour)
+        hx, hy, hw, hh = cv2.boundingRect(hand_contour)
+        
+        # Calculate intersection
+        ix_min = max(fx, hx)
+        iy_min = max(fy, hy)
+        ix_max = min(fx + fw, hx + hw)
+        iy_max = min(fy + fh, hy + hh)
+        
+        occlusion_ratio = 0.0
+        if ix_min < ix_max and iy_min < iy_max:
+            intersection_area = (ix_max - ix_min) * (iy_max - iy_min)
+            hand_area = hw * hh
+            if hand_area > 0:
+                occlusion_ratio = float(intersection_area / hand_area)
+        
         hull = cv2.convexHull(hand_contour, returnPoints=False)
         if len(hull) > 3:
             defects = cv2.convexityDefects(hand_contour, hull)
@@ -256,9 +328,14 @@ def estimate_fingers_opencv(frames: List[np.ndarray]) -> int:
                         if angle <= 90:
                             count += 1
                 finger_counts.append(count + 1)
-    if not finger_counts:
-        return 0
-    return max(finger_counts)
+            else:
+                finger_counts.append(0)
+        else:
+            finger_counts.append(0)
+            
+        occlusion_ratios.append(occlusion_ratio)
+            
+    return finger_counts, occlusion_ratios
 
 def compute_fft_metrics(frames: List[np.ndarray]) -> Tuple[bool, Dict[str, float]]:
     """
@@ -363,14 +440,18 @@ def compute_optical_flow_metrics(frames: List[np.ndarray]) -> Tuple[bool, Dict[s
     except Exception:
         return False, {"mean_magnitude": 0.4, "variance": 0.12}
 
-def compute_face_similarity(id_image_path: Optional[str], video_path: str, frames: Optional[List[np.ndarray]] = None) -> Tuple[float, str]:
+def compute_face_similarity(id_image_path: Optional[str], video_path: str, frames: Optional[List[np.ndarray]] = None) -> Tuple[float, str, Optional[str], Optional[str]]:
     """
     Computes a 1:1 facial similarity match between the photo on the ID document
     and the face frames in the liveness video using FaceNet (if available) or OpenCV template matching.
-    Returns (similarity_score, face_match_decision).
+    Saves cropped faces to the uploads/ directory for VLM visual verification.
+    Returns (similarity_score, face_match_decision, id_face_path, live_face_path).
     """
+    id_face_path = None
+    live_face_path = None
+
     if not id_image_path:
-        return 1.0, "MATCH"
+        return 1.0, "MATCH", None, None
 
     id_name = os.path.basename(id_image_path).lower()
     vid_name = os.path.basename(video_path).lower()
@@ -385,19 +466,33 @@ def compute_face_similarity(id_image_path: Optional[str], video_path: str, frame
     if id_matched_name and vid_matched_name and id_matched_name != vid_matched_name:
         is_mismatch = True
 
-    if get_mock_ml_flag():
-        if is_mismatch:
-            return 0.35, "MISMATCH"
-        return 0.95, "MATCH"
-
-    if is_mismatch:
-        return 0.35, "MISMATCH"
+    # Check mock/ml logic
+    if get_mock_ml_flag() or is_mismatch:
+        # Save dummy crops for UI/VLM if files exist
+        if OPENCV_AVAILABLE and os.path.exists(id_image_path):
+            try:
+                os.makedirs("uploads", exist_ok=True)
+                id_img = cv2.imread(id_image_path)
+                if id_img is not None:
+                    id_face = align_face(cv2.cvtColor(id_img, cv2.COLOR_BGR2RGB))
+                    id_face_path = os.path.join("uploads", f"face_id_{id_name}")
+                    cv2.imwrite(id_face_path, cv2.cvtColor(id_face, cv2.COLOR_RGB2BGR))
+                
+                if frames and len(frames) > 0:
+                    live_face = align_face(frames[0])
+                    live_face_path = os.path.join("uploads", f"face_live_{os.path.basename(video_path)}.png")
+                    cv2.imwrite(live_face_path, cv2.cvtColor(live_face, cv2.COLOR_RGB2BGR))
+            except Exception:
+                pass
+        score = 0.35 if is_mismatch else 0.95
+        decision = "MISMATCH" if is_mismatch else "MATCH"
+        return score, decision, id_face_path, live_face_path
 
     # Real FaceNet execution
     if TORCH_AVAILABLE and FACENET_AVAILABLE and OPENCV_AVAILABLE:
         try:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            model = InceptionResnetV1(pretrained='vggface2').eval().to(device)
+            model = get_cached_facenet(device)
 
             if os.path.exists(id_image_path):
                 id_img = cv2.imread(id_image_path)
@@ -405,15 +500,27 @@ def compute_face_similarity(id_image_path: Optional[str], video_path: str, frame
                     id_img_rgb = cv2.cvtColor(id_img, cv2.COLOR_BGR2RGB)
                     id_face = align_face(id_img_rgb)
                     if id_face is not None:
+                        # Save ID face crop
+                        os.makedirs("uploads", exist_ok=True)
+                        id_face_path = os.path.join("uploads", f"face_id_{id_name}")
+                        cv2.imwrite(id_face_path, cv2.cvtColor(id_face, cv2.COLOR_RGB2BGR))
+
                         id_emb = get_face_embedding(id_face, model, device)
                         
                         if not frames:
                             frames = extract_frames(video_path, num_frames=5)
                         
                         video_embs = []
+                        saved_live_face = False
                         for frame in frames:
                             vid_face = align_face(frame)
                             if vid_face is not None:
+                                # Save first valid live face crop
+                                if not saved_live_face:
+                                    live_face_path = os.path.join("uploads", f"face_live_{os.path.basename(video_path)}.png")
+                                    cv2.imwrite(live_face_path, cv2.cvtColor(vid_face, cv2.COLOR_RGB2BGR))
+                                    saved_live_face = True
+
                                 try:
                                     vid_emb = get_face_embedding(vid_face, model, device)
                                     video_embs.append(vid_emb)
@@ -425,7 +532,7 @@ def compute_face_similarity(id_image_path: Optional[str], video_path: str, frame
                             score = float(np.mean(sims))
                             score = max(0.0, min(1.0, score))
                             decision = "MATCH" if score >= 0.60 else "MISMATCH"
-                            return round(score, 3), decision
+                            return round(score, 3), decision, id_face_path, live_face_path
         except Exception as e:
             print(f"FaceNet similarity extraction failed: {e}. Falling back to OpenCV template matching.")
 
@@ -441,11 +548,17 @@ def compute_face_similarity(id_image_path: Optional[str], video_path: str, frame
                 id_faces = face_cascade.detectMultiScale(id_gray, 1.1, 4)
                 if len(id_faces) > 0:
                     x, y, w, h = sorted(id_faces, key=lambda f: f[2]*f[3], reverse=True)[0]
-                    id_face_crop = id_gray[y:y+h, x:x+w]
+                    id_face_crop = id_img[y:y+h, x:x+w]
                 else:
                     ih, iw = id_gray.shape
-                    id_face_crop = id_gray[int(ih*0.15):int(ih*0.85), int(iw*0.5):int(iw*0.95)]
+                    id_face_crop = id_img[int(ih*0.15):int(ih*0.85), int(iw*0.5):int(iw*0.95)]
                 
+                # Save ID face crop
+                if id_face_crop is not None:
+                    os.makedirs("uploads", exist_ok=True)
+                    id_face_path = os.path.join("uploads", f"face_id_{id_name}")
+                    cv2.imwrite(id_face_path, id_face_crop)
+
                 frame_img = None
                 if frames and len(frames) > 0:
                     frame_img = frames[0]
@@ -459,14 +572,19 @@ def compute_face_similarity(id_image_path: Optional[str], video_path: str, frame
                     vid_faces = face_cascade.detectMultiScale(frame_gray, 1.1, 4)
                     if len(vid_faces) > 0:
                         x, y, w, h = sorted(vid_faces, key=lambda f: f[2]*f[3], reverse=True)[0]
-                        vid_face_crop = frame_gray[y:y+h, x:x+w]
+                        vid_face_crop = frame_img[y:y+h, x:x+w]
                     else:
                         vh, vw = frame_gray.shape
-                        vid_face_crop = frame_gray[int(vh*0.2):int(vh*0.8), int(vw*0.2):int(vw*0.8)]
+                        vid_face_crop = frame_img[int(vh*0.2):int(vh*0.8), int(vw*0.2):int(vw*0.8)]
                     
+                    # Save Live face crop
+                    if vid_face_crop is not None:
+                        live_face_path = os.path.join("uploads", f"face_live_{os.path.basename(video_path)}.png")
+                        cv2.imwrite(live_face_path, vid_face_crop)
+
                     if id_face_crop is not None and vid_face_crop is not None:
-                        id_resized = cv2.resize(id_face_crop, (128, 128))
-                        vid_resized = cv2.resize(vid_face_crop, (128, 128))
+                        id_resized = cv2.resize(cv2.cvtColor(id_face_crop, cv2.COLOR_BGR2GRAY), (128, 128))
+                        vid_resized = cv2.resize(cv2.cvtColor(vid_face_crop, cv2.COLOR_BGR2GRAY), (128, 128))
                         
                         res = cv2.matchTemplate(id_resized, vid_resized, cv2.TM_CCOEFF_NORMED)
                         _, max_val, _, _ = cv2.minMaxLoc(res)
@@ -479,11 +597,11 @@ def compute_face_similarity(id_image_path: Optional[str], video_path: str, frame
                         
                         score = (max(0.0, max_val) * 0.6) + (max(0.0, hist_corr) * 0.4)
                         decision = "MATCH" if score >= 0.60 else "MISMATCH"
-                        return round(float(score), 3), decision
+                        return round(float(score), 3), decision, id_face_path, live_face_path
         except Exception:
             pass
 
-    return 0.95, "MATCH"
+    return 0.95, "MATCH", id_face_path, live_face_path
 
 def verify_liveness(
     video_path: str,
@@ -497,7 +615,7 @@ def verify_liveness(
     Also compares face similarity to the ID image.
     """
     # 1. Compute face similarity
-    similarity_score, face_match_decision = compute_face_similarity(id_image_path, video_path)
+    similarity_score, face_match_decision, id_face_path, live_face_path = compute_face_similarity(id_image_path, video_path)
 
     # 2. Check if we should use local Mock mode
     if get_mock_ml_flag():
@@ -600,7 +718,9 @@ def verify_liveness(
             face_match_decision=face_match_decision,
             minifasnet_active=use_minifasnet,
             mediapipe_gesture_matched=gestural_passed,
-            ensemble_metrics=ensemble_metrics
+            ensemble_metrics=ensemble_metrics,
+            cropped_id_face_path=id_face_path,
+            cropped_live_face_path=live_face_path
         )
 
     # 3. Real inference logic (or hybrid fallback)
@@ -701,21 +821,68 @@ def verify_liveness(
                 face_match_decision=face_match_decision,
                 minifasnet_active=use_minifasnet,
                 mediapipe_gesture_matched=gestural_passed,
-                ensemble_metrics=ensemble_metrics
+                ensemble_metrics=ensemble_metrics,
+                cropped_id_face_path=id_face_path,
+                cropped_live_face_path=live_face_path
             )
         raise FileNotFoundError(f"Liveness video file not found at {video_path}")
 
     # Extract frames for CV calculations
     try:
-        frames = extract_frames(video_path, num_frames=10)
+        frames = extract_frames(video_path, num_frames=20)
     except Exception as e:
         raise ValueError(f"Frame extraction failed: {str(e)}")
 
     if not frames:
         raise ValueError("Could not extract any valid frames from the video.")
 
+    # Gestural check: scan frame-by-frame for the active gesture frame
+    gestural_passed = False
+    expected_count = 2
+    if expected_gesture:
+        if "3" in expected_gesture:
+            expected_count = 3
+        elif "1" in expected_gesture or "pointing" in expected_gesture:
+            expected_count = 1
+
+    gesture_frame = None
+    gesture_frame_index = -1
+    max_detected_occlusion = 0.0
+
+    if OPENCV_AVAILABLE and expected_gesture:
+        print(f"Liveness Agent: Running batch finger and occlusion estimation on {len(frames)} frames for gesture '{expected_gesture}'...")
+        try:
+            finger_counts, occlusion_ratios = estimate_fingers(frames)
+            
+            # Find all frames where finger count matches expected_count
+            matching_indices = [i for i, count in enumerate(finger_counts) if count == expected_count]
+            
+            if matching_indices:
+                gestural_passed = True
+                # Select the matching frame with the highest occlusion ratio (hand closest to face anchor points)
+                best_idx = max(matching_indices, key=lambda idx: occlusion_ratios[idx])
+                gesture_frame = frames[best_idx]
+                gesture_frame_index = best_idx
+                max_detected_occlusion = occlusion_ratios[best_idx]
+                print(f"  => SUCCESS: Gesture challenge satisfied at frame {best_idx+1} with hand-face occlusion ratio: {max_detected_occlusion:.2f}")
+            else:
+                # Log details for troubleshooting
+                for idx, (count, occ) in enumerate(zip(finger_counts, occlusion_ratios)):
+                    print(f"  - Frame {idx+1}/{len(frames)}: detected {count} fingers, occlusion {occ:.2f}")
+                print("  => FAILURE: Gesture challenge was not satisfied in any frame of the video.")
+        except Exception as ge:
+            print(f"  - Error running batch estimation: {ge}")
+            pass
+    else:
+        gestural_passed = True
+
+    # Reposition the matched gesture frame to the beginning of the list
+    # This ensures that compute_face_similarity uses this frame for the primary live face crop (live_face_path)
+    if gesture_frame is not None:
+        frames = [gesture_frame] + [f for i, f in enumerate(frames) if i != gesture_frame_index]
+
     # Compute actual face similarity on extracted frames
-    similarity_score, face_match_decision = compute_face_similarity(id_image_path, video_path, frames)
+    similarity_score, face_match_decision, id_face_path, live_face_path = compute_face_similarity(id_image_path, video_path, frames)
 
     # Compute actual mathematical checks on the extracted frames
     fft_grid, fft_metrics = compute_fft_metrics(frames)
@@ -742,13 +909,10 @@ def verify_liveness(
                 "on your GPU server, or use MOCK_ML=true to mock liveness."
             )
 
-        # Load model
+        # Load model using global cache
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        model = LivenessModel()
         try:
-            model.load_state_dict(torch.load(model_path, map_location=device))
-            model.to(device)
-            model.eval()
+            model = get_cached_liveness_model(model_path, device)
         except Exception as e:
             raise RuntimeError(f"Failed to load liveness model weights: {str(e)}")
 
@@ -776,23 +940,6 @@ def verify_liveness(
         physical_spoof = not rppg_pulse and not fft_grid
         digital_deepfake = fft_grid or flow_mismatch
         avg_spoof_prob = 0.95 if (physical_spoof or digital_deepfake) else 0.05
-
-    # Gestural check using MediaPipe/OpenCV contour pipeline
-    gestural_passed = True
-    if OPENCV_AVAILABLE and expected_gesture:
-        try:
-            detected_fingers = estimate_fingers(frames)
-            expected_count = 2
-            if "3" in expected_gesture:
-                expected_count = 3
-            elif "1" in expected_gesture or "pointing" in expected_gesture:
-                expected_count = 1
-            
-            # If fingers were detected but did not match expected count
-            if detected_fingers > 0 and detected_fingers != expected_count:
-                gestural_passed = False
-        except Exception:
-            pass
 
     passed = (not physical_spoof) and gestural_passed and (not digital_deepfake) and (not fft_grid) and rppg_pulse and (not flow_mismatch) and (face_match_decision == "MATCH")
     confidence = 1.0 - avg_spoof_prob if passed else avg_spoof_prob
@@ -825,7 +972,8 @@ def verify_liveness(
         "mediapipe_gesture_match": bool(gestural_passed),
         "fft_peak_ratio": float(fft_metrics.get("peak_ratio", 1.4)),
         "rppg_pulse_detected": bool(rppg_pulse),
-        "optical_flow_var": float(flow_metrics.get("variance", 0.12))
+        "optical_flow_var": float(flow_metrics.get("variance", 0.12)),
+        "gesture_occlusion_ratio": float(max_detected_occlusion)
     }
 
     return LivenessResult(
@@ -846,5 +994,7 @@ def verify_liveness(
         face_match_decision=face_match_decision,
         minifasnet_active=use_minifasnet,
         mediapipe_gesture_matched=gestural_passed,
-        ensemble_metrics=ensemble_metrics
+        ensemble_metrics=ensemble_metrics,
+        cropped_id_face_path=id_face_path,
+        cropped_live_face_path=live_face_path
     )

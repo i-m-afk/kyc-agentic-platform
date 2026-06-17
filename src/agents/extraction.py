@@ -71,10 +71,176 @@ def calculate_legibility_score(image_path: str) -> float:
         pass
     return legibility
 
+def align_id_card(image_path: str) -> str:
+    """
+    Detects the ID card in the image using YOLOv8 (with OpenCV contour fallback),
+    crops and applies perspective warp to flatten it and make it upright.
+    Saves the aligned ID card image to the uploads directory.
+    Returns the path to the aligned image, or the original path if alignment fails.
+    """
+    import cv2
+    import numpy as np
+
+    if not os.path.exists(image_path):
+        return image_path
+
+    try:
+        img = cv2.imread(image_path)
+        if img is None:
+            return image_path
+
+        h, w = img.shape[:2]
+
+        # 1. Try YOLOv8 card bounding box detection
+        cropped_img = img.copy()
+        yolo_success = False
+
+        try:
+            from ultralytics import YOLO
+            # Load the lightweight nano model
+            model = YOLO("yolov8n.pt")
+            results = model(img, verbose=False)
+
+            best_box = None
+            max_area = 0
+
+            for result in results:
+                if result.boxes is not None:
+                    for box in result.boxes:
+                        coords = box.xyxy[0].cpu().numpy()
+                        bx1, by1, bx2, by2 = map(int, coords)
+                        bw, bh = bx2 - bx1, by2 - by1
+                        area = bw * bh
+                        conf = float(box.conf[0].cpu().numpy())
+
+                        # We want a box of reasonable size and confidence
+                        if conf >= 0.25 and area > (w * h * 0.1):
+                            if area > max_area:
+                                max_area = area
+                                best_box = (bx1, by1, bx2, by2)
+
+            if best_box is not None:
+                bx1, by1, bx2, by2 = best_box
+                # Add slight margin
+                margin = int(min(bx2-bx1, by2-by1) * 0.05)
+                bx1 = max(0, bx1 - margin)
+                by1 = max(0, by1 - margin)
+                bx2 = min(w, bx2 + margin)
+                by2 = min(h, by2 + margin)
+
+                cropped_img = img[by1:by2, bx1:bx2]
+                yolo_success = True
+                print(f"YOLOv8 successfully detected card bounding box: {best_box}")
+        except Exception as yolo_err:
+            print(f"YOLOv8 card detection failed or not available: {yolo_err}. Falling back to standard image for contour detection.")
+
+        # 2. Try OpenCV corner/perspective warp alignment on the cropped/original region
+        aligned = None
+        try:
+            gray = cv2.cvtColor(cropped_img, cv2.COLOR_BGR2GRAY)
+            # Apply bilateral filter to preserve edges while removing noise
+            blurred = cv2.bilateralFilter(gray, 9, 75, 75)
+            # Canny edge detection
+            edged = cv2.Canny(blurred, 50, 200)
+
+            # Morphological closing to close gaps in edges
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+            closed = cv2.morphologyEx(edged, cv2.MORPH_CLOSE, kernel)
+
+            # Find contours
+            contours, _ = cv2.findContours(closed.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+            # Find the largest contour by area
+            contours = sorted(contours, key=cv2.contourArea, reverse=True)
+
+            card_contour = None
+            for c in contours:
+                peri = cv2.arcLength(c, True)
+                approx = cv2.approxPolyDP(c, 0.02 * peri, True)
+
+                # Check if approximated contour has 4 points
+                if len(approx) == 4 and cv2.contourArea(c) > (cropped_img.shape[0] * cropped_img.shape[1] * 0.15):
+                    card_contour = approx
+                    break
+
+            if card_contour is not None:
+                # Order the points: top-left, top-right, bottom-right, bottom-left
+                pts = card_contour.reshape(4, 2)
+                rect = np.zeros((4, 2), dtype="float32")
+
+                s = pts.sum(axis=1)
+                rect[0] = pts[np.argmin(s)] # top-left
+                rect[2] = pts[np.argmax(s)] # bottom-right
+
+                diff = np.diff(pts, axis=1)
+                rect[1] = pts[np.argmin(diff)] # top-right
+                rect[3] = pts[np.argmax(diff)] # bottom-left
+
+                # Compute width and height of the warped card
+                (tl, tr, br, bl) = rect
+                width_a = np.sqrt(((br[0] - bl[0]) ** 2) + ((br[1] - bl[1]) ** 2))
+                width_b = np.sqrt(((tr[0] - tl[0]) ** 2) + ((tr[1] - tl[1]) ** 2))
+                max_width = max(int(width_a), int(width_b))
+
+                height_a = np.sqrt(((tr[0] - br[0]) ** 2) + ((tr[1] - br[1]) ** 2))
+                height_b = np.sqrt(((tl[0] - bl[0]) ** 2) + ((tl[1] - bl[1]) ** 2))
+                max_height = max(int(height_a), int(height_b))
+
+                dst = np.array([
+                    [0, 0],
+                    [max_width - 1, 0],
+                    [max_width - 1, max_height - 1],
+                    [0, max_height - 1]
+                ], dtype="float32")
+
+                M = cv2.getPerspectiveTransform(rect, dst)
+                warped = cv2.warpPerspective(cropped_img, M, (max_width, max_height))
+                aligned = warped
+                print("OpenCV perspective warp successfully aligned card contours.")
+        except Exception as cv_err:
+            print(f"OpenCV contour alignment failed: {cv_err}")
+
+        if aligned is None:
+            if yolo_success:
+                aligned = cropped_img
+            else:
+                aligned = img
+
+        # If the image is vertical (height > width), rotate it 90 degrees clockwise to make it landscape
+        ah, aw = aligned.shape[:2]
+        if ah > aw:
+            aligned = cv2.rotate(aligned, cv2.ROTATE_90_CLOCKWISE)
+            print("Rotated card by 90 degrees to landscape orientation.")
+
+        # Ensure uploads directory exists
+        os.makedirs("uploads", exist_ok=True)
+
+        # Save the aligned card
+        base_name = os.path.basename(image_path)
+        aligned_path = os.path.join("uploads", f"aligned_{base_name}")
+        cv2.imwrite(aligned_path, aligned)
+        print(f"Saved aligned ID card to {aligned_path}")
+        return aligned_path
+
+    except Exception as e:
+        print(f"ID card alignment process crashed: {e}")
+        return image_path
+
+
 def extract_document_info(image_path: str) -> ExtractionResult:
     """
     Extracts key details (Name, DOB, ID number) from the uploaded ID card image.
     Uses local Mock mode or vLLM vision model inference.
+    """
+    aligned_path = align_id_card(image_path)
+    res = _extract_document_info_raw(aligned_path)
+    res.aligned_id_image_path = aligned_path
+    return res
+
+
+def _extract_document_info_raw(image_path: str) -> ExtractionResult:
+    """
+    Internal raw document extraction function.
     """
     legibility = calculate_legibility_score(image_path)
     

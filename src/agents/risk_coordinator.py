@@ -1,6 +1,8 @@
 import os
 import json
 import httpx
+import base64
+import mimetypes
 from typing import Optional, Dict, Any
 from difflib import SequenceMatcher
 from src.schemas.models import (
@@ -49,18 +51,34 @@ def calculate_name_similarity(name1: str, name2: str) -> float:
     return ratio
 
 
+def get_base64_image_url(image_path: str) -> str:
+    """
+    Encodes an image to a base64 Data URL format.
+    """
+    mime_type, _ = mimetypes.guess_type(image_path)
+    if not mime_type:
+        mime_type = "image/jpeg"
+    with open(image_path, "rb") as image_file:
+        b64_data = base64.b64encode(image_file.read()).decode("utf-8")
+    return f"data:{mime_type};base64,{b64_data}"
+
+
 def coordinate_risk(
     extraction: ExtractionResult,
     liveness: LivenessResult,
     screening: ScreeningResult,
     audit_log: dict,
-    applicant_name: Optional[str] = None
+    applicant_name: Optional[str] = None,
+    id_image_path: Optional[str] = None,
+    liveness_video_path: Optional[str] = None,
+    aligned_id_image_path: Optional[str] = None
 ) -> ConsolidatedRiskReport:
     """
     Consolidates the outputs of the Extraction, Liveness, and Screener agents
     into a final risk score (0-100), risk level (LOW/MEDIUM/HIGH), and explanation.
-    Uses a local vLLM model to perform cognitive coordination when possible,
-    falling back to deterministic rule-based scoring if the server is offline.
+    Uses a local vLLM VLM model (Qwen2-VL) to perform multimodal cognitive coordination
+    when possible, inspecting raw visuals (aligned ID, face crops) to verify details
+    and check for deepfakes/forgeries. Falls back to rule-based scoring if the server is offline.
     """
     # 1. Compute rule-based fallback values first (always available as fallback)
     score = 0.0
@@ -172,7 +190,7 @@ def coordinate_risk(
     else:
         fallback_explanation = f"Risk factors identified: {'; '.join(factors)}."
 
-    # Try Cognitive LLM Coordination if vLLM is available and MOCK_ML is false
+    # Try Cognitive VLM Coordination if vLLM is available and MOCK_ML is false
     if not get_mock_ml_flag():
         api_url = get_vllm_api_url()
         # Query vLLM models registry
@@ -187,8 +205,13 @@ def coordinate_risk(
             pass
 
         system_prompt = (
-            "You are a senior KYC compliance risk coordinator. Evaluate the following applicant telemetry and decide the application verdict. "
-            "Reason through conflicting signals (e.g., high noise/frequency grids vs actual spoofs). "
+            "You are a senior KYC compliance risk coordinator. Evaluate the following applicant telemetry "
+            "and visually inspect the attached images (ID card, face cropped from ID, face cropped from live video). "
+            "Pay critical attention to the live face crop, which is extracted from the active hand-face occlusion frame "
+            "(the '3-Finger Test'). Inspect the boundaries where the fingers cross or overlay the face. Check for "
+            "deepfake blending glitches: fingers warping into the face texture, digital face templates shifting or jittering "
+            "under the hand, facial skin bleeding into fingers, or pixelation/blurring at occlusion seams. "
+            "Decide the final application verdict. Reason through conflicting signals. "
             "Output EXACTLY in JSON format matching this schema:\n"
             "{\n"
             '  "risk_score": <0-100>,\n'
@@ -213,6 +236,7 @@ Liveness Telemetry:
 - Liveness Status: {liveness.liveness_status.value}
 - MiniFASNet Spoof Probability: {liveness.spoof_probability:.2f}
 - MediaPipe Gesture Check: {'MATCH' if liveness.mediapipe_gesture_matched else 'MISMATCH'}
+- Hand-Face Occlusion Ratio (3-Finger Test): {liveness.ensemble_metrics.get('gesture_occlusion_ratio', 0.0):.2f}
 - FFT Peak Ratio (Compression/Deepfake check): {liveness.fft_metrics.get('peak_ratio', 1.4):.2f}
 - rPPG Heartbeat check: {'PASS' if liveness.rppg_pulse_detected else 'FAIL'}
 - Optical Flow movement: {'PASS' if not liveness.optical_flow_mismatch else 'FAIL'}
@@ -229,14 +253,62 @@ Document Quality:
 - Forgery Reason: {extraction.forgery_reason or 'None'}
 """
 
+        user_content = [
+            {"type": "text", "text": user_prompt}
+        ]
+
+        images_sent = []
+        
+        # Aligned/Raw ID Card image
+        target_id_path = aligned_id_image_path or extraction.aligned_id_image_path or id_image_path
+        if target_id_path and os.path.exists(target_id_path):
+            try:
+                b64_url = get_base64_image_url(target_id_path)
+                user_content.append({
+                    "type": "image_url",
+                    "image_url": {"url": b64_url}
+                })
+                images_sent.append("ID Card Document (Aligned/Preprocessed)")
+            except Exception as e:
+                print(f"Failed to encode ID image: {e}")
+
+        # Crop ID Face
+        id_face_path = getattr(liveness, "cropped_id_face_path", None)
+        if id_face_path and os.path.exists(id_face_path):
+            try:
+                b64_url = get_base64_image_url(id_face_path)
+                user_content.append({
+                    "type": "image_url",
+                    "image_url": {"url": b64_url}
+                })
+                images_sent.append("Cropped Face from ID")
+            except Exception as e:
+                print(f"Failed to encode ID face crop: {e}")
+
+        # Crop Live Face
+        live_face_path = getattr(liveness, "cropped_live_face_path", None)
+        if live_face_path and os.path.exists(live_face_path):
+            try:
+                b64_url = get_base64_image_url(live_face_path)
+                user_content.append({
+                    "type": "image_url",
+                    "image_url": {"url": b64_url}
+                })
+                images_sent.append("Cropped Face from Live Video Frame")
+            except Exception as e:
+                print(f"Failed to encode live face crop: {e}")
+
+        if images_sent:
+            user_content[0]["text"] += "\nVisual Assets Sent for Analysis:\n" + "\n".join(f"- Image {i+1}: {desc}" for i, desc in enumerate(images_sent))
+
         payload = {
             "model": model_name,
             "messages": [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
+                {"role": "user", "content": user_content}
             ],
             "temperature": 0.0,
-            "max_tokens": 300
+            "max_tokens": 400
         }
 
         try:

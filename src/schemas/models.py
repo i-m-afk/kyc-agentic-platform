@@ -50,6 +50,7 @@ class ExtractionResult(BaseModel):
     forgery_detected: Optional[bool] = False
     forgery_reason: Optional[str] = ""
     local_ocr_active: bool = Field(default=False)
+    aligned_id_image_path: Optional[str] = None
 
     @field_validator("dob")
     @classmethod
@@ -84,6 +85,8 @@ class LivenessResult(BaseModel):
     minifasnet_active: bool = Field(default=False)
     mediapipe_gesture_matched: bool = Field(default=True)
     ensemble_metrics: Dict[str, Any] = Field(default_factory=dict)
+    cropped_id_face_path: Optional[str] = None
+    cropped_live_face_path: Optional[str] = None
 
 class ScreeningResult(BaseModel):
     match_found: bool

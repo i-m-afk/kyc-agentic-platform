@@ -386,12 +386,21 @@ if st.session_state.selected_app_id:
             if os.path.exists(app["id_image"]):
                 try:
                     img = Image.open(app["id_image"])
-                    st.image(img, caption="ID Document Upload", use_container_width=True)
+                    st.image(img, caption="Raw ID Document Upload", use_container_width=True)
                 except Exception:
                     st.caption("ID Document preview unavailable.")
             else:
                 # Preloaded mock sample visual fallback
                 st.caption(f"📁 Document File: `{app['id_image']}` (Mock Preview)")
+
+            # Show aligned ID document if available
+            aligned_id_path = getattr(ext, "aligned_id_image_path", None)
+            if aligned_id_path and os.path.exists(aligned_id_path):
+                try:
+                    img_aligned = Image.open(aligned_id_path)
+                    st.image(img_aligned, caption="Aligned & Rectified ID Document", use_container_width=True)
+                except Exception:
+                    st.caption("Aligned document preview unavailable.")
                 
         with ag_col2:
             st.markdown("### 🎥 Liveness Agent")
@@ -432,6 +441,7 @@ if st.session_state.selected_app_id:
                     <p style="margin-bottom: 0.3rem;"><strong>Face Similarity (FaceNet):</strong> {metrics.get('face_similarity', 0.0)*100:.1f}%</p>
                     <p style="margin-bottom: 0.3rem;"><strong>Spoof Prob (MiniFASNet):</strong> {metrics.get('minifasnet_spoof_prob', 0.0)*100:.1f}%</p>
                     <p style="margin-bottom: 0.3rem;"><strong>Gesture Check (MediaPipe):</strong> {gest_match_str}</p>
+                    <p style="margin-bottom: 0.3rem;"><strong>Hand-Face Occlusion (3-Finger Test):</strong> {metrics.get('gesture_occlusion_ratio', 0.0)*100:.1f}%</p>
                     <p style="margin-bottom: 0.3rem;"><strong>FFT Peak Ratio:</strong> {metrics.get('fft_peak_ratio', 0.0):.2f}</p>
                     <p style="margin-bottom: 0.3rem;"><strong>rPPG Cardiac Pulse:</strong> {rppg_det_str}</p>
                     <p style="margin-bottom: 0;"><strong>Optical Flow Variance:</strong> {metrics.get('optical_flow_var', 0.0):.4f}</p>
@@ -467,7 +477,32 @@ if st.session_state.selected_app_id:
                 st.line_chart(live.rppg_signal, height=130)
                 rppg_pulse_label = "Heartbeat Rhythm Detected" if live.rppg_pulse_detected else "Flatline / No Pulse Wave"
                 st.caption(f"rPPG Signal Rhythm: **{rppg_pulse_label}**")
-                
+                 
+            # Show cropped faces for visual likeness verification
+            id_face_path = getattr(live, "cropped_id_face_path", None)
+            live_face_path = getattr(live, "cropped_live_face_path", None)
+            if (id_face_path and os.path.exists(id_face_path)) or (live_face_path and os.path.exists(live_face_path)):
+                st.markdown("##### Visual Face Verification")
+                fc_col1, fc_col2 = st.columns(2)
+                with fc_col1:
+                    if id_face_path and os.path.exists(id_face_path):
+                        try:
+                            img_id_face = Image.open(id_face_path)
+                            st.image(img_id_face, caption="Face from ID", use_container_width=True)
+                        except Exception:
+                            st.caption("ID face crop unavailable.")
+                    else:
+                        st.caption("No ID face crop found.")
+                with fc_col2:
+                    if live_face_path and os.path.exists(live_face_path):
+                        try:
+                            img_live_face = Image.open(live_face_path)
+                            st.image(img_live_face, caption="Face from Video", use_container_width=True)
+                        except Exception:
+                            st.caption("Live face crop unavailable.")
+                    else:
+                        st.caption("No live face crop found.")
+
             st.caption(f"📁 Face Video File: `{app['video']}`")
             
         with ag_col3:

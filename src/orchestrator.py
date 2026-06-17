@@ -93,13 +93,22 @@ def run_kyc_pipeline(
     # 3. Risk Coordination
     start_coordinator = time.time()
     try:
-        risk_report = coordinate_risk(extraction_res, liveness_res, screening_res, audit_log, applicant_name)
+        risk_report = coordinate_risk(
+            extraction=extraction_res,
+            liveness=liveness_res,
+            screening=screening_res,
+            audit_log=audit_log,
+            applicant_name=applicant_name,
+            id_image_path=id_image_path,
+            liveness_video_path=liveness_video_path,
+            aligned_id_image_path=extraction_res.aligned_id_image_path
+        )
         coordinator_latency = time.time() - start_coordinator
         audit_log["RiskCoordinatorAgent"] = create_audit_entry(
             "RiskCoordinatorAgent",
             "SUCCESS",
             coordinator_latency,
-            "rule_based_risk_calculator",
+            "qwen2-vl-coordinator" if not get_mock_ml_flag() else "rule_based_risk_calculator",
             {}
         )
         risk_report.agent_audit_log = audit_log

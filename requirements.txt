@@ -10,3 +10,5 @@ mediapipe
 facenet-pytorch
 insightface
 onnxruntime
+easyocr
+ultralytics

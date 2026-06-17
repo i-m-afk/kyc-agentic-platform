@@ -36,6 +36,29 @@ try:
 except ImportError:
     pass
 
+INSIGHTFACE_AVAILABLE = False
+try:
+    from insightface.app import FaceAnalysis
+    INSIGHTFACE_AVAILABLE = True
+except ImportError:
+    pass
+
+_arcface_app = None
+
+def get_cached_arcface():
+    global _arcface_app
+    if _arcface_app is None and INSIGHTFACE_AVAILABLE:
+        try:
+            # Prepare CPU device or CUDA if available
+            ctx = 0 if (TORCH_AVAILABLE and torch.cuda.is_available()) else -1
+            print("Loading SOTA ArcFace model into memory...")
+            _arcface_app = FaceAnalysis(name='buffalo_l')
+            _arcface_app.prepare(ctx_id=ctx, det_size=(640, 640))
+        except Exception as e:
+            print(f"Failed to prepare InsightFace: {e}")
+            _arcface_app = None
+    return _arcface_app
+
 # Keep LivenessModel definition local to support actual PyTorch inference loading
 if TORCH_AVAILABLE:
     class LivenessModel(nn.Module):
@@ -487,6 +510,65 @@ def compute_face_similarity(id_image_path: Optional[str], video_path: str, frame
         score = 0.35 if is_mismatch else 0.95
         decision = "MISMATCH" if is_mismatch else "MATCH"
         return score, decision, id_face_path, live_face_path
+
+    # Real ArcFace / RetinaFace execution (if available)
+    arcface_app = get_cached_arcface()
+    if INSIGHTFACE_AVAILABLE and arcface_app is not None and OPENCV_AVAILABLE:
+        try:
+            if os.path.exists(id_image_path):
+                id_img = cv2.imread(id_image_path)
+                if id_img is not None:
+                    # ArcFace expectation is BGR
+                    id_faces = arcface_app.get(id_img)
+                    if len(id_faces) > 0:
+                        # Sort by face size (descending)
+                        id_faces = sorted(id_faces, key=lambda x: (x.bbox[2]-x.bbox[0]) * (x.bbox[3]-x.bbox[1]), reverse=True)
+                        id_emb = id_faces[0].embedding
+                        
+                        # Save ID face crop
+                        bbox = id_faces[0].bbox.astype(int)
+                        x1, y1, x2, y2 = max(0, bbox[0]), max(0, bbox[1]), min(id_img.shape[1], bbox[2]), min(id_img.shape[0], bbox[3])
+                        id_face_crop = id_img[y1:y2, x1:x2]
+                        os.makedirs("uploads", exist_ok=True)
+                        id_face_path = os.path.join("uploads", f"face_id_{id_name}")
+                        cv2.imwrite(id_face_path, id_face_crop)
+                        
+                        if not frames:
+                            frames = extract_frames(video_path, num_frames=5)
+                            
+                        video_embs = []
+                        saved_live_face = False
+                        for frame in frames:
+                            # Frame is in RGB from extraction, convert to BGR for InsightFace
+                            frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                            vid_faces = arcface_app.get(frame_bgr)
+                            if len(vid_faces) > 0:
+                                vid_faces = sorted(vid_faces, key=lambda x: (x.bbox[2]-x.bbox[0]) * (x.bbox[3]-x.bbox[1]), reverse=True)
+                                video_embs.append(vid_faces[0].embedding)
+                                
+                                if not saved_live_face:
+                                    v_bbox = vid_faces[0].bbox.astype(int)
+                                    vx1, vy1, vx2, vy2 = max(0, v_bbox[0]), max(0, v_bbox[1]), min(frame_bgr.shape[1], v_bbox[2]), min(frame_bgr.shape[0], v_bbox[3])
+                                    live_face_crop = frame_bgr[vy1:vy2, vx1:vx2]
+                                    live_face_path = os.path.join("uploads", f"face_live_{os.path.basename(video_path)}.png")
+                                    cv2.imwrite(live_face_path, live_face_crop)
+                                    saved_live_face = True
+                                    
+                        if video_embs:
+                            mean_vid_emb = np.mean(video_embs, axis=0)
+                            dot_product = np.dot(id_emb, mean_vid_emb)
+                            norm_id = np.linalg.norm(id_emb)
+                            norm_vid = np.linalg.norm(mean_vid_emb)
+                            if norm_id > 0 and norm_vid > 0:
+                                score = float(dot_product / (norm_id * norm_vid))
+                            else:
+                                score = 0.0
+                            score = max(0.0, min(1.0, score))
+                            # 0.45 is a safe threshold for ArcFace buffalo_l cosine similarity
+                            decision = "MATCH" if score >= 0.45 else "MISMATCH"
+                            return round(score, 3), decision, id_face_path, live_face_path
+        except Exception as e:
+            print(f"ArcFace similarity extraction failed: {e}. Falling back to FaceNet.")
 
     # Real FaceNet execution
     if TORCH_AVAILABLE and FACENET_AVAILABLE and OPENCV_AVAILABLE:

@@ -8,7 +8,7 @@ from src.schemas.models import (
     ScreeningResult,
     ConsolidatedRiskReport
 )
-from src.agents.extraction import extract_document_info
+from src.agents.extraction import extract_document_info, align_id_card
 from src.agents.liveness import verify_liveness
 from src.agents.screener import screen_identity
 from src.agents.risk_coordinator import coordinate_risk
@@ -30,12 +30,19 @@ def run_kyc_pipeline(
     """
     audit_log = {}
     
+    # 0. Align ID card first so both agents work on the same oriented image
+    try:
+        aligned_id_image_path = align_id_card(id_image_path)
+    except Exception as e:
+        print(f"Orchestrator: Alignment failed, falling back to raw image. Error: {e}")
+        aligned_id_image_path = id_image_path
+
     # 1. Run parallel steps
     start_parallel = time.time()
     
     with ThreadPoolExecutor(max_workers=2) as executor:
-        extraction_future = executor.submit(extract_document_info, id_image_path)
-        liveness_future = executor.submit(verify_liveness, liveness_video_path, expected_gesture, id_image_path, use_minifasnet)
+        extraction_future = executor.submit(extract_document_info, aligned_id_image_path)
+        liveness_future = executor.submit(verify_liveness, liveness_video_path, expected_gesture, aligned_id_image_path, use_minifasnet)
         
         try:
             extraction_res = extraction_future.result()

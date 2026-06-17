@@ -272,18 +272,8 @@ Document Quality:
             except Exception as e:
                 print(f"Failed to encode ID image: {e}")
 
-        # Crop ID Face
-        id_face_path = getattr(liveness, "cropped_id_face_path", None)
-        if id_face_path and os.path.exists(id_face_path):
-            try:
-                b64_url = get_base64_image_url(id_face_path)
-                user_content.append({
-                    "type": "image_url",
-                    "image_url": {"url": b64_url}
-                })
-                images_sent.append("Cropped Face from ID")
-            except Exception as e:
-                print(f"Failed to encode ID face crop: {e}")
+        # We omit the cropped ID face to stay within vLLM's max 2-image constraint.
+        # The VLM can verify likeness directly between the Aligned ID Card and the Cropped Live Face.
 
         # Crop Live Face
         live_face_path = getattr(liveness, "cropped_live_face_path", None)

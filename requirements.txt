@@ -8,3 +8,5 @@ torch
 torchvision
 mediapipe
 facenet-pytorch
+insightface
+onnxruntime

@@ -232,7 +232,10 @@ def extract_document_info(image_path: str) -> ExtractionResult:
     Extracts key details (Name, DOB, ID number) from the uploaded ID card image.
     Uses local Mock mode or vLLM vision model inference.
     """
-    aligned_path = align_id_card(image_path)
+    if os.path.basename(image_path).startswith("aligned_"):
+        aligned_path = image_path
+    else:
+        aligned_path = align_id_card(image_path)
     res = _extract_document_info_raw(aligned_path)
     res.aligned_id_image_path = aligned_path
     return res

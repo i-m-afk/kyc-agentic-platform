@@ -1089,9 +1089,9 @@ def verify_liveness(
 
     # Extract frames for CV calculations
     if status_callback:
-        status_callback("liveness", "Running", "Extracting 20 video frames for verification...")
+        status_callback("liveness", "Running", "Extracting 12 video frames for verification...")
     try:
-        frames = extract_frames(video_path, num_frames=20)
+        frames = extract_frames(video_path, num_frames=12)
     except Exception as e:
         raise ValueError(f"Frame extraction failed: {str(e)}")
 
@@ -1150,12 +1150,17 @@ def verify_liveness(
         status_callback("liveness", "Running", "Performing biometric face comparison via ArcFace/RetinaFace...")
     similarity_score, face_match_decision, id_face_path, live_face_path = compute_face_similarity(id_image_path, video_path, frames)
 
-    # Compute actual mathematical checks on the extracted frames
+    # Compute FFT, rPPG and optical-flow checks in parallel to utilise idle CPU cores
     if status_callback:
-        status_callback("liveness", "Running", "Analyzing FFT frequency grid & rPPG cardiac pulse...")
-    fft_grid, fft_metrics = compute_fft_metrics(frames)
-    rppg_pulse, rppg_signal = compute_rppg_metrics(frames)
-    flow_mismatch, flow_metrics = compute_optical_flow_metrics(frames)
+        status_callback("liveness", "Running", "Analyzing FFT / rPPG / optical-flow in parallel...")
+    from concurrent.futures import ThreadPoolExecutor as _TPE
+    with _TPE(max_workers=3) as _pool:
+        _fft_fut  = _pool.submit(compute_fft_metrics, frames)
+        _rppg_fut = _pool.submit(compute_rppg_metrics, frames)
+        _flow_fut = _pool.submit(compute_optical_flow_metrics, frames)
+        fft_grid,     fft_metrics  = _fft_fut.result()
+        rppg_pulse,   rppg_signal  = _rppg_fut.result()
+        flow_mismatch, flow_metrics = _flow_fut.result()
 
     # Resolve Deep Learning Inference if MOCK_ML is false
     use_dl = not get_mock_ml_flag() and TORCH_AVAILABLE

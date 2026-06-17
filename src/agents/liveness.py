@@ -52,7 +52,18 @@ def get_cached_arcface():
             # Prepare CPU device or CUDA if available
             ctx = 0 if (TORCH_AVAILABLE and torch.cuda.is_available()) else -1
             print("Loading SOTA ArcFace model into memory...")
-            _arcface_app = FaceAnalysis(name='buffalo_l')
+            
+            providers = ['CPUExecutionProvider']
+            try:
+                import onnxruntime as ort
+                avail = ort.get_available_providers()
+                gpu_provs = [p for p in ['ROCMExecutionProvider', 'MIGraphXExecutionProvider', 'CUDAExecutionProvider'] if p in avail]
+                if gpu_provs:
+                    providers = gpu_provs + providers
+            except Exception:
+                pass
+                
+            _arcface_app = FaceAnalysis(name='buffalo_l', providers=providers)
             _arcface_app.prepare(ctx_id=ctx, det_size=(640, 640))
         except Exception as e:
             print(f"Failed to prepare InsightFace: {e}")

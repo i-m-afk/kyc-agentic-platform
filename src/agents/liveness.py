@@ -872,6 +872,8 @@ def verify_liveness(
     Detects physical spoofing, validates dynamic gestures, and flags digital deepfakes.
     Also compares face similarity to the ID image.
     """
+    if expected_gesture in (None, "", "None"):
+        expected_gesture = None
     if status_callback:
         status_callback("liveness", "Running", "Starting liveness analysis & computing face similarity...")
     # 1. Compute face similarity
@@ -901,7 +903,7 @@ def verify_liveness(
         flow_metrics = {"mean_magnitude": 0.4, "variance": 0.12}
 
         # 1. Physical spoof checks
-        if any(term in filename for term in ["spoof", "fail", "imposter", "failed_video"]):
+        if any(term in filename for term in ["spoof", "fail", "imposter", "failed_video", "attack"]):
             physical_spoof = True
             status = LivenessStatus.FAILED
             spoof_prob = 0.88

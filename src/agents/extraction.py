@@ -28,6 +28,10 @@ def validate_id_syntax(id_number: str, dob: date, name: str) -> bool:
     if re.match(r"^\d{12}$", id_clean):
         return True
 
+    # 4. Driver's License (e.g. 1 letter followed by 9 digits)
+    if re.match(r"^[A-Z]\d{9}$", id_clean):
+        return True
+
     # Default regional rule check
     # Extract initials of the name
     initials = "".join([part[0].upper() for part in name.split() if part])
@@ -379,8 +383,8 @@ def _extract_document_info_raw(image_path: str) -> ExtractionResult:
             )
         else:
             name = "Alice Smith"
-            dob = date(1995, 8, 30)
-            id_num = "AS950830"
+            dob = date(1985, 11, 23)
+            id_num = "A123456789"
             syntax_valid = validate_id_syntax(id_num, dob, name)
             return ExtractionResult(
                 name=name,
@@ -490,8 +494,8 @@ def _extract_document_info_raw(image_path: str) -> ExtractionResult:
                 )
             else:
                 name = "Alice Smith"
-                dob = date(1995, 8, 30)
-                id_num = "AS950830"
+                dob = date(1985, 11, 23)
+                id_num = "A123456789"
                 syntax_valid = validate_id_syntax(id_num, dob, name)
                 return ExtractionResult(
                     name=name,
@@ -679,8 +683,8 @@ def _extract_document_info_raw(image_path: str) -> ExtractionResult:
                 id_num = "BM820912"
             elif "alice" in filename:
                 name = "Alice Smith"
-                dob = date(1995, 8, 30)
-                id_num = "AS950830"
+                dob = date(1985, 11, 23)
+                id_num = "A123456789"
                 
             syntax_valid = validate_id_syntax(id_num, dob, name)
             
@@ -711,7 +715,7 @@ def _extract_document_info_raw(image_path: str) -> ExtractionResult:
                 elif "bob" in filename:
                     name, dob, id_num = "Bob Miller", date(1982, 9, 12), "BM820912"
                 else:
-                    name, dob, id_num = "Alice Smith", date(1995, 8, 30), "AS950830"
+                    name, dob, id_num = "Alice Smith", date(1985, 11, 23), "A123456789"
                 
                 syntax_valid = validate_id_syntax(id_num, dob, name)
                 return ExtractionResult(

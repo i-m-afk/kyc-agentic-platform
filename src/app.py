@@ -91,13 +91,13 @@ if "selected_app_id" not in st.session_state:
 
 # Pre-populate session state with some mock applicants for instant testing
 if not st.session_state.applications:
-    # Alice Smith - Clean Low Risk
+    # Alice Smith (Normal) - Clean Low Risk
     st.session_state.applications["APP-1001"] = {
         "id": "APP-1001",
         "name": "Alice Smith",
-        "id_image": "alice_smith_card.jpg",
-        "video": "alice_smith_live.mp4",
-        "expected_gesture": "2_fingers_near_eye",
+        "id_image": "alice_smith_card.png",
+        "video": "alice_smith_normal.mp4",
+        "expected_gesture": "None",
         "created_at": "2026-06-13 14:23:10",
         "status": ApplicationStatus.PENDING,
         "pipeline_run": None
@@ -146,6 +146,17 @@ if not st.session_state.applications:
         "status": ApplicationStatus.PENDING,
         "pipeline_run": None
     }
+    # Alice Smith (Attack) - High Risk Liveness Spoof
+    st.session_state.applications["APP-1006"] = {
+        "id": "APP-1006",
+        "name": "Alice Smith",
+        "id_image": "alice_smith_card.png",
+        "video": "alice_smith_attack.mp4",
+        "expected_gesture": "None",
+        "created_at": "2026-06-14 09:20:00",
+        "status": ApplicationStatus.PENDING,
+        "pipeline_run": None
+    }
 
 # 3. Sidebar Panel
 st.sidebar.markdown("### 🛡️ Agentic KYC Platform")
@@ -157,10 +168,14 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("### 📋 Applications Queue")
 
 # Active App Selection
-app_options = {
-    app_id: f"{app_id} - {app['name']} ({app['status'].value})"
-    for app_id, app in st.session_state.applications.items()
-}
+app_options = {}
+for app_id, app in st.session_state.applications.items():
+    suffix = ""
+    if app_id == "APP-1001":
+        suffix = " (Normal)"
+    elif app_id == "APP-1006":
+        suffix = " (Attack)"
+    app_options[app_id] = f"{app_id} - {app['name']}{suffix} ({app['status'].value})"
 
 selected_id = st.sidebar.selectbox(
     "Select Applicant to Review",
@@ -206,9 +221,10 @@ uploaded_gesture = st.sidebar.selectbox(
     options=[
         "2_fingers_near_eye",
         "3_fingers_near_cheek",
-        "1_finger_pointing_to_nose"
+        "1_finger_pointing_to_nose",
+        "None"
     ],
-    format_func=lambda x: x.replace("_", " ").title()
+    format_func=lambda x: "No Gesture Challenge" if x == "None" else x.replace("_", " ").title()
 )
 
 use_minifasnet = st.sidebar.checkbox(
@@ -274,12 +290,12 @@ if st.session_state.selected_app_id:
     # Display the onboarding gesture challenge assigned to the applicant
     st.markdown(f"""
     <div style="background-color: rgba(79, 70, 229, 0.1); border-left: 5px solid #4f46e5; border-radius: 6px; padding: 1rem; margin-top: 1rem; margin-bottom: 1.5rem;">
-        <h4 style="margin: 0; color: #4f46e5; font-size: 1rem;">🎯 Required Onboarding Gesture Challenge</h4>
-        <p style="margin: 0.25rem 0 0 0; font-size: 1.15rem; font-weight: 600; color: #1e1b4b;">
-            {app.get('expected_gesture', '2_fingers_near_eye').replace('_', ' ').title()}
-        </p>
-        <small style="color: #6b7280;">Applicant must display this gesture near their face to pass the digital deepfake & spoof verification.</small>
-    </div>
+         <h4 style="margin: 0; color: #4f46e5; font-size: 1rem;">🎯 Required Onboarding Gesture Challenge</h4>
+         <p style="margin: 0.25rem 0 0 0; font-size: 1.15rem; font-weight: 600; color: #1e1b4b;">
+             {("No Gesture Challenge" if app.get('expected_gesture', '2_fingers_near_eye') in (None, 'None', '') else app.get('expected_gesture', '2_fingers_near_eye').replace('_', ' ').title())}
+         </p>
+         <small style="color: #6b7280;">Applicant must display this gesture near their face to pass the digital deepfake & spoof verification.</small>
+     </div>
     """, unsafe_allow_html=True)
     
     # Run pipeline button

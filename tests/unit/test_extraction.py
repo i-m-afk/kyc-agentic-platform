@@ -37,8 +37,8 @@ def test_extract_document_info_mock_default():
     res = extract_document_info("some_other_id.jpg")
     assert isinstance(res, ExtractionResult)
     assert res.name == "Alice Smith"
-    assert res.dob == date(1995, 8, 30)
-    assert res.id_number == "AS950830"
+    assert res.dob == date(1985, 11, 23)
+    assert res.id_number == "A123456789"
     assert res.confidence == 0.90
     assert res.syntax_valid is True
     assert res.legibility_score >= 0.90
@@ -53,6 +53,7 @@ def test_id_syntax_validation():
     from src.agents.extraction import validate_id_syntax
     # Valid syntax matching DOB
     assert validate_id_syntax("AS950830", date(1995, 8, 30), "Alice Smith") is True
+    assert validate_id_syntax("A123456789", date(1985, 11, 23), "Alice Smith") is True
     assert validate_id_syntax("RV780214", date(1978, 2, 14), "Robert Vance") is True
     # Invalid syntax due to mismatch in year/initials
     assert validate_id_syntax("JD9900515", date(1990, 5, 15), "Jane Doe") is False

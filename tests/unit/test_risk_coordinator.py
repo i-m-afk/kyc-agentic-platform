@@ -11,7 +11,7 @@ from src.schemas.models import (
 from src.agents.risk_coordinator import coordinate_risk
 
 def test_coordinate_risk_low_clean():
-    ext = ExtractionResult(name="Alice Smith", dob=date(1995, 8, 30), id_number="AS950830", confidence=0.95)
+    ext = ExtractionResult(name="Alice Smith", dob=date(1985, 11, 23), id_number="A123456789", confidence=0.95)
     live = LivenessResult(liveness_status=LivenessStatus.PASSED, confidence=0.98, spoof_probability=0.02, flags=[])
     screen = ScreeningResult(match_found=False, watchlist_hits=[], adverse_media_hits=[], risk_level=RiskLevel.LOW)
     
@@ -33,7 +33,7 @@ def test_coordinate_risk_high_watchlist():
     assert "watchlist match" in report.explanation.lower() or "screening" in report.explanation.lower()
 
 def test_coordinate_risk_failed_liveness():
-    ext = ExtractionResult(name="Alice Smith", dob=date(1995, 8, 30), id_number="AS950830", confidence=0.95)
+    ext = ExtractionResult(name="Alice Smith", dob=date(1985, 11, 23), id_number="A123456789", confidence=0.95)
     # Failed liveness check
     live = LivenessResult(liveness_status=LivenessStatus.FAILED, confidence=0.92, spoof_probability=0.88, flags=["device_screen_glare"])
     screen = ScreeningResult(match_found=False, watchlist_hits=[], adverse_media_hits=[], risk_level=RiskLevel.LOW)
@@ -63,7 +63,7 @@ def test_coordinate_risk_fuzzy_name_match():
     assert "Identity mismatch" not in report.explanation
 
 def test_coordinate_risk_decision_mode():
-    ext = ExtractionResult(name="Alice Smith", dob=date(1995, 8, 30), id_number="AS950830", confidence=0.95)
+    ext = ExtractionResult(name="Alice Smith", dob=date(1985, 11, 23), id_number="A123456789", confidence=0.95)
     live = LivenessResult(liveness_status=LivenessStatus.PASSED, confidence=0.98, spoof_probability=0.02, flags=[])
     screen = ScreeningResult(match_found=False, watchlist_hits=[], adverse_media_hits=[], risk_level=RiskLevel.LOW)
     
@@ -73,7 +73,7 @@ def test_coordinate_risk_decision_mode():
 
 
 def test_coordinate_risk_with_visual_assets(tmp_path):
-    ext = ExtractionResult(name="Alice Smith", dob=date(1995, 8, 30), id_number="AS950830", confidence=0.95)
+    ext = ExtractionResult(name="Alice Smith", dob=date(1985, 11, 23), id_number="A123456789", confidence=0.95)
     live = LivenessResult(
         liveness_status=LivenessStatus.PASSED,
         confidence=0.98,

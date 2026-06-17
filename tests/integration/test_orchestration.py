@@ -30,7 +30,15 @@ def test_run_kyc_pipeline_clean_flow():
     assert ext.name == "Alice Smith"
     assert live.liveness_status == LivenessStatus.PASSED
     assert screen.match_found is False
-    assert report.risk_level == RiskLevel.LOW
+
+    # The Alice Smith card is AI-generated, so the forensic detector should flag it
+    # when the image file exists on disk. If the file is present, risk is escalated.
+    if os.path.exists("alice_smith_card.jpg") or os.path.exists("uploads/aligned_alice_smith_card.jpg"):
+        assert ext.ai_generated_check in ("AI_GENERATED", "SUSPICIOUS")
+        assert report.risk_level in (RiskLevel.MEDIUM, RiskLevel.HIGH)
+    else:
+        # When the image file is absent (CI), mock returns CLEAN
+        assert report.risk_level == RiskLevel.LOW
     
     # Assert audit log populated correctly
     assert "ExtractionAgent" in report.agent_audit_log

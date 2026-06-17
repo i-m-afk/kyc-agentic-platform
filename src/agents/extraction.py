@@ -7,6 +7,29 @@ from typing import Optional
 from src.schemas.models import ExtractionResult
 from src.utils.helpers import get_mock_ml_flag, get_vllm_api_url
 
+# --- Cached heavy objects (loaded once) ---
+_haar_face_cascade = None
+_yolo_model = None
+
+def _get_face_cascade():
+    """Return a cached Haar face cascade classifier."""
+    global _haar_face_cascade
+    if _haar_face_cascade is None:
+        import cv2
+        _haar_face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+    return _haar_face_cascade
+
+def _get_yolo_model():
+    """Return a cached YOLOv8 model, or None if ultralytics is not available."""
+    global _yolo_model
+    if _yolo_model is None:
+        try:
+            from ultralytics import YOLO
+            _yolo_model = YOLO("yolov8n.pt")
+        except Exception:
+            pass
+    return _yolo_model
+
 def validate_id_syntax(id_number: str, dob: date, name: str) -> bool:
     """
     Deterministically checks if the ID number follows regional syntax rules
@@ -100,10 +123,10 @@ def align_id_card(image_path: str) -> str:
         yolo_success = False
 
         try:
-            from ultralytics import YOLO
-            # Load the lightweight nano model
-            model = YOLO("yolov8n.pt")
-            results = model(img, verbose=False)
+            yolo = _get_yolo_model()
+            if yolo is None:
+                raise ImportError("ultralytics not available")
+            results = yolo(img, verbose=False)
 
             best_box = None
             max_area = 0
@@ -219,7 +242,7 @@ def align_id_card(image_path: str) -> str:
         # Run face-cascade based rotation correction to make sure it is right-side up
         try:
             gray = cv2.cvtColor(aligned, cv2.COLOR_BGR2GRAY)
-            face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+            face_cascade = _get_face_cascade()
             
             rotations = [
                 (None, 0),
@@ -273,6 +296,7 @@ def extract_document_info(image_path: str, status_callback: Optional[object] = N
     """
     Extracts key details (Name, DOB, ID number) from the uploaded ID card image.
     Uses local Mock mode or vLLM vision model inference.
+    Also runs CV-based AI forensic analysis on the actual image file.
     """
     if status_callback:
         status_callback("extraction", "Running", "Extracting ID card text & verifying hologram crests via VLM...")
@@ -282,6 +306,28 @@ def extract_document_info(image_path: str, status_callback: Optional[object] = N
         aligned_path = align_id_card(image_path)
     res = _extract_document_info_raw(aligned_path)
     res.aligned_id_image_path = aligned_path
+
+    # Run CV-based AI forensic analysis on the real image file (works regardless of mock mode)
+    # This catches AI-generated cards that the VLM or mock mode might miss
+    forensic_image_path = aligned_path if os.path.exists(aligned_path) else image_path
+    if os.path.exists(forensic_image_path):
+        try:
+            from src.utils.ai_image_forensics import detect_ai_generated_image
+            if status_callback:
+                status_callback("extraction", "Running", "Running forensic AI-generation detection on ID card...")
+            forensic_result = detect_ai_generated_image(forensic_image_path)
+
+            # Override if forensic analysis detects AI generation and current result says CLEAN
+            if forensic_result["verdict"] in ("AI_GENERATED", "SUSPICIOUS"):
+                if res.ai_generated_check == "CLEAN":
+                    res.ai_generated_check = forensic_result["verdict"]
+                    res.forgery_detected = forensic_result["verdict"] == "AI_GENERATED"
+                    res.forgery_reason = forensic_result["reason"]
+                    print(f"Forensic override: ID card flagged as {forensic_result['verdict']} "
+                          f"(AI probability: {forensic_result['ai_probability']:.3f})")
+        except Exception as e:
+            print(f"Forensic AI detection skipped: {e}")
+
     if status_callback:
         status_callback("extraction", "Completed")
     return res

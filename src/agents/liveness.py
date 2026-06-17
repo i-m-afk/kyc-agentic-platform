@@ -45,6 +45,45 @@ except ImportError:
 
 _arcface_app = None
 
+# --- Cached ONNX providers (detected once at first use) ---
+_onnx_providers = None
+
+def _get_onnx_providers():
+    """Detect available ONNX Runtime execution providers once and cache the result."""
+    global _onnx_providers
+    if _onnx_providers is not None:
+        return _onnx_providers
+
+    _onnx_providers = ['CPUExecutionProvider']
+    try:
+        import onnxruntime as ort
+        avail = ort.get_available_providers()
+        # Only attempt GPU providers if the runtime actually reports them as available
+        gpu_provs = [p for p in ['ROCMExecutionProvider', 'MIGraphXExecutionProvider', 'CUDAExecutionProvider'] if p in avail]
+        if gpu_provs:
+            _onnx_providers = gpu_provs + ['CPUExecutionProvider']
+    except Exception:
+        pass
+    return _onnx_providers
+
+# --- Cached Haar cascade classifiers (loaded once) ---
+_haar_face_cascade = None
+_haar_eye_cascade = None
+
+def _get_face_cascade():
+    """Return a cached Haar face cascade classifier."""
+    global _haar_face_cascade
+    if _haar_face_cascade is None and OPENCV_AVAILABLE:
+        _haar_face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+    return _haar_face_cascade
+
+def _get_eye_cascade():
+    """Return a cached Haar eye cascade classifier."""
+    global _haar_eye_cascade
+    if _haar_eye_cascade is None and OPENCV_AVAILABLE:
+        _haar_eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
+    return _haar_eye_cascade
+
 def get_cached_arcface():
     global _arcface_app
     if _arcface_app is None and INSIGHTFACE_AVAILABLE:
@@ -53,24 +92,20 @@ def get_cached_arcface():
             ctx = 0 if (TORCH_AVAILABLE and torch.cuda.is_available()) else -1
             print("Loading SOTA ArcFace model into memory...")
             
-            providers = ['CPUExecutionProvider']
-            try:
-                import onnxruntime as ort
-                avail = ort.get_available_providers()
-                gpu_provs = [p for p in ['ROCMExecutionProvider', 'MIGraphXExecutionProvider', 'CUDAExecutionProvider'] if p in avail]
-                if gpu_provs:
-                    providers = gpu_provs + providers
-            except Exception:
-                pass
+            providers = _get_onnx_providers()
+            has_gpu = any(p != 'CPUExecutionProvider' for p in providers)
                 
             try:
                 _arcface_app = FaceAnalysis(name='buffalo_l', providers=providers)
-                _arcface_app.prepare(ctx_id=ctx, det_size=(640, 640))
+                _arcface_app.prepare(ctx_id=ctx if has_gpu else -1, det_size=(640, 640))
             except Exception as gpu_err:
-                print(f"Failed to prepare InsightFace with GPU execution providers {providers}: {gpu_err}")
-                print("Retrying InsightFace initialization with CPUExecutionProvider fallback...")
-                _arcface_app = FaceAnalysis(name='buffalo_l', providers=['CPUExecutionProvider'])
-                _arcface_app.prepare(ctx_id=-1, det_size=(640, 640))
+                if has_gpu:
+                    print(f"Failed to prepare InsightFace with GPU providers {providers}: {gpu_err}")
+                    print("Retrying InsightFace initialization with CPUExecutionProvider fallback...")
+                    _arcface_app = FaceAnalysis(name='buffalo_l', providers=['CPUExecutionProvider'])
+                    _arcface_app.prepare(ctx_id=-1, det_size=(640, 640))
+                else:
+                    raise
         except Exception as e:
             print(f"Failed to prepare InsightFace: {e}")
             _arcface_app = None
@@ -156,8 +191,8 @@ def align_face(image: np.ndarray) -> np.ndarray:
 
     try:
         gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-        face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-        eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
+        face_cascade = _get_face_cascade()
+        eye_cascade = _get_eye_cascade()
 
         faces = face_cascade.detectMultiScale(gray, 1.1, 4)
         if len(faces) == 0:
@@ -249,10 +284,9 @@ def estimate_fingers_mediapipe(frames: List[np.ndarray]) -> Tuple[List[int], Lis
             hy_min = min(p.y for p in lm) * fh
             hy_max = max(p.y for p in lm) * fh
             
-            # Detect face using Haar Cascade
+            # Detect face using cached Haar Cascade
             gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
-            face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-            faces = face_cascade.detectMultiScale(gray, 1.1, 4)
+            faces = _get_face_cascade().detectMultiScale(gray, 1.1, 4)
             
             occlusion_ratio = 0.0
             if len(faces) > 0:
@@ -717,8 +751,7 @@ def compute_face_similarity(id_image_path: Optional[str], video_path: str, frame
             id_img = cv2.imread(id_image_path)
             if id_img is not None:
                 id_gray = cv2.cvtColor(id_img, cv2.COLOR_BGR2GRAY)
-                cascade_path = os.path.join(cv2.data.haarcascades, 'haarcascade_frontalface_default.xml')
-                face_cascade = cv2.CascadeClassifier(cascade_path)
+                face_cascade = _get_face_cascade()
                 
                 # Check different rotations for template matching fallback as well
                 best_score = -1.0
@@ -837,12 +870,11 @@ def crop_face_frames_for_liveness(frames: list, arcface_app=None) -> list:
             except Exception:
                 pass
 
-        # Fallback to Haar Cascade on the first frame if InsightFace failed
+        # Fallback to cached Haar Cascade on the first frame if InsightFace failed
         if bbox is None:
             try:
                 gray = cv2.cvtColor(first_frame, cv2.COLOR_RGB2GRAY)
-                face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-                faces = face_cascade.detectMultiScale(gray, 1.1, 4)
+                faces = _get_face_cascade().detectMultiScale(gray, 1.1, 4)
                 if len(faces) > 0:
                     x, y, w, h = sorted(faces, key=lambda f: f[2]*f[3], reverse=True)[0]
                     if w > 10 and h > 10:

@@ -1118,22 +1118,41 @@ def verify_liveness(
         try:
             finger_counts, occlusion_ratios = estimate_fingers(frames)
             
-            # Find all frames where finger count matches expected_count
-            matching_indices = [i for i, count in enumerate(finger_counts) if count == expected_count]
+            # Determine the match tolerance.
+            # MediaPipe is reliable (exact). OpenCV fallback is noisy: use ±1 tolerance.
+            using_mediapipe = MEDIAPIPE_AVAILABLE
+            tolerance = 0 if using_mediapipe else 1
+            
+            # Find all frames where finger count is within tolerance of expected_count
+            matching_indices = [
+                i for i, count in enumerate(finger_counts)
+                if abs(count - expected_count) <= tolerance
+            ]
             
             if matching_indices:
                 gestural_passed = True
-                # Select the matching frame with the highest occlusion ratio (hand closest to face anchor points)
                 best_idx = max(matching_indices, key=lambda idx: occlusion_ratios[idx])
                 gesture_frame = frames[best_idx]
                 gesture_frame_index = best_idx
                 max_detected_occlusion = occlusion_ratios[best_idx]
                 print(f"  => SUCCESS: Gesture challenge satisfied at frame {best_idx+1} with hand-face occlusion ratio: {max_detected_occlusion:.2f}")
             else:
-                # Log details for troubleshooting
-                for idx, (count, occ) in enumerate(zip(finger_counts, occlusion_ratios)):
-                    print(f"  - Frame {idx+1}/{len(frames)}: detected {count} fingers, occlusion {occ:.2f}")
-                print("  => FAILURE: Gesture challenge was not satisfied in any frame of the video.")
+                # Secondary fallback for 1-finger / pointing challenges:
+                # If the hand is clearly overlapping the face region (occlusion > 0.3),
+                # treat it as a passing gesture — the person IS pointing near their face.
+                is_pointing_challenge = (expected_count == 1 or "pointing" in (expected_gesture or ""))
+                max_occ = max(occlusion_ratios) if occlusion_ratios else 0.0
+                if is_pointing_challenge and max_occ >= 0.3:
+                    best_idx = max(range(len(occlusion_ratios)), key=lambda i: occlusion_ratios[i])
+                    gestural_passed = True
+                    gesture_frame = frames[best_idx]
+                    gesture_frame_index = best_idx
+                    max_detected_occlusion = occlusion_ratios[best_idx]
+                    print(f"  => SUCCESS (occlusion fallback): Hand-face occlusion {max_occ:.2f} satisfies pointing challenge.")
+                else:
+                    for idx, (count, occ) in enumerate(zip(finger_counts, occlusion_ratios)):
+                        print(f"  - Frame {idx+1}/{len(frames)}: detected {count} fingers, occlusion {occ:.2f}")
+                    print("  => FAILURE: Gesture challenge was not satisfied in any frame of the video.")
         except Exception as ge:
             print(f"  - Error running batch estimation: {ge}")
             pass

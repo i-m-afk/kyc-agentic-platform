@@ -400,8 +400,8 @@ def compute_fft_metrics(frames: List[np.ndarray]) -> Tuple[bool, Dict[str, float
             peaks.append(max_val / mean_val)
             
         peak_ratio = float(np.mean(peaks))
-        # High spikes in the high frequencies denote grid artifacts (threshold 6.5)
-        fft_grid_detected = peak_ratio > 6.5
+        # High spikes in the high frequencies denote grid artifacts (threshold 35.0)
+        fft_grid_detected = peak_ratio > 35.0
         return fft_grid_detected, {"peak_ratio": round(peak_ratio, 3), "high_freq_std": round(float(np.std(peaks)), 4)}
     except Exception:
         return False, {"peak_ratio": 1.4, "high_freq_std": 0.08}
@@ -468,8 +468,8 @@ def compute_optical_flow_metrics(frames: List[np.ndarray]) -> Tuple[bool, Dict[s
             std_deviations.append(np.std(magnitude))
             
         flow_var = float(np.mean(std_deviations))
-        # Large flow variance indicates sudden edge warps or temporal lagging overlays
-        optical_flow_mismatch = flow_var > 1.8
+        # Large flow variance indicates sudden edge warps or temporal lagging overlays (threshold 8.0)
+        optical_flow_mismatch = flow_var > 8.0
         return optical_flow_mismatch, {"mean_magnitude": round(float(np.mean(std_deviations)), 3), "variance": round(flow_var, 3)}
     except Exception:
         return False, {"mean_magnitude": 0.4, "variance": 0.12}
@@ -529,58 +529,85 @@ def compute_face_similarity(id_image_path: Optional[str], video_path: str, frame
             if os.path.exists(id_image_path):
                 id_img = cv2.imread(id_image_path)
                 if id_img is not None:
-                    # ArcFace expectation is BGR
-                    id_faces = arcface_app.get(id_img)
-                    if len(id_faces) > 0:
-                        # Sort by face size (descending)
-                        id_faces = sorted(id_faces, key=lambda x: (x.bbox[2]-x.bbox[0]) * (x.bbox[3]-x.bbox[1]), reverse=True)
-                        id_emb = id_faces[0].embedding
+                    # 1. Extract live face embeddings from video first
+                    if not frames:
+                        frames = extract_frames(video_path, num_frames=5)
                         
-                        # Save ID face crop
-                        bbox = id_faces[0].bbox.astype(int)
-                        x1, y1, x2, y2 = max(0, bbox[0]), max(0, bbox[1]), min(id_img.shape[1], bbox[2]), min(id_img.shape[0], bbox[3])
-                        id_face_crop = id_img[y1:y2, x1:x2]
-                        os.makedirs("uploads", exist_ok=True)
-                        id_face_path = os.path.join("uploads", f"face_id_{id_name}")
-                        cv2.imwrite(id_face_path, id_face_crop)
-                        
-                        if not frames:
-                            frames = extract_frames(video_path, num_frames=5)
+                    video_embs = []
+                    saved_live_face = False
+                    arcface_frames = frames
+                    if len(frames) > 3:
+                        indices = np.linspace(0, len(frames) - 1, 3, dtype=int)
+                        arcface_frames = [frames[i] for i in indices]
+                    for frame in arcface_frames:
+                        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                        vid_faces = arcface_app.get(frame_bgr)
+                        if len(vid_faces) > 0:
+                            vid_faces = sorted(vid_faces, key=lambda x: (x.bbox[2]-x.bbox[0]) * (x.bbox[3]-x.bbox[1]), reverse=True)
+                            video_embs.append(vid_faces[0].embedding)
                             
-                        video_embs = []
-                        saved_live_face = False
-                        # Downsample frames to max 3 frames for faster CPU/non-GPU similarity extraction
-                        arcface_frames = frames
-                        if len(frames) > 3:
-                            indices = np.linspace(0, len(frames) - 1, 3, dtype=int)
-                            arcface_frames = [frames[i] for i in indices]
-                        for frame in arcface_frames:
-                            # Frame is in RGB from extraction, convert to BGR for InsightFace
-                            frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-                            vid_faces = arcface_app.get(frame_bgr)
-                            if len(vid_faces) > 0:
-                                vid_faces = sorted(vid_faces, key=lambda x: (x.bbox[2]-x.bbox[0]) * (x.bbox[3]-x.bbox[1]), reverse=True)
-                                video_embs.append(vid_faces[0].embedding)
+                            if not saved_live_face:
+                                v_bbox = vid_faces[0].bbox.astype(int)
+                                vx1, vy1, vx2, vy2 = max(0, v_bbox[0]), max(0, v_bbox[1]), min(frame_bgr.shape[1], v_bbox[2]), min(frame_bgr.shape[0], v_bbox[3])
+                                live_face_crop = frame_bgr[vy1:vy2, vx1:vx2]
+                                live_face_path = os.path.join("uploads", f"face_live_{os.path.basename(video_path)}.png")
+                                cv2.imwrite(live_face_path, live_face_crop)
+                                saved_live_face = True
                                 
-                                if not saved_live_face:
-                                    v_bbox = vid_faces[0].bbox.astype(int)
-                                    vx1, vy1, vx2, vy2 = max(0, v_bbox[0]), max(0, v_bbox[1]), min(frame_bgr.shape[1], v_bbox[2]), min(frame_bgr.shape[0], v_bbox[3])
-                                    live_face_crop = frame_bgr[vy1:vy2, vx1:vx2]
-                                    live_face_path = os.path.join("uploads", f"face_live_{os.path.basename(video_path)}.png")
-                                    cv2.imwrite(live_face_path, live_face_crop)
-                                    saved_live_face = True
-                                    
-                        if video_embs:
-                            mean_vid_emb = np.mean(video_embs, axis=0)
-                            dot_product = np.dot(id_emb, mean_vid_emb)
-                            norm_id = np.linalg.norm(id_emb)
-                            norm_vid = np.linalg.norm(mean_vid_emb)
-                            if norm_id > 0 and norm_vid > 0:
-                                score = float(dot_product / (norm_id * norm_vid))
+                    mean_vid_emb = np.mean(video_embs, axis=0) if video_embs else None
+
+                    # 2. Try rotations of the ID image (0, 90, 180, 270) to find the correct orientation
+                    best_score = -1.0
+                    best_id_emb = None
+                    best_id_face_crop = None
+                    
+                    rotations = [
+                        (None, "0"),
+                        (cv2.ROTATE_90_CLOCKWISE, "90_CW"),
+                        (cv2.ROTATE_180, "180"),
+                        (cv2.ROTATE_90_COUNTERCLOCKWISE, "90_CCW")
+                    ]
+                    
+                    for rot_code, rot_name in rotations:
+                        if rot_code is None:
+                            rotated_id = id_img.copy()
+                        else:
+                            rotated_id = cv2.rotate(id_img, rot_code)
+                            
+                        id_faces = arcface_app.get(rotated_id)
+                        if len(id_faces) > 0:
+                            id_faces = sorted(id_faces, key=lambda x: (x.bbox[2]-x.bbox[0]) * (x.bbox[3]-x.bbox[1]), reverse=True)
+                            curr_emb = id_faces[0].embedding
+                            
+                            if mean_vid_emb is not None:
+                                dot_product = np.dot(curr_emb, mean_vid_emb)
+                                norm_id = np.linalg.norm(curr_emb)
+                                norm_vid = np.linalg.norm(mean_vid_emb)
+                                if norm_id > 0 and norm_vid > 0:
+                                    curr_score = float(dot_product / (norm_id * norm_vid))
+                                else:
+                                    curr_score = 0.0
                             else:
-                                score = 0.0
-                            score = max(0.0, min(1.0, score))
-                            # 0.45 is a safe threshold for ArcFace buffalo_l cosine similarity
+                                curr_score = 0.5
+                                
+                            if curr_score > best_score:
+                                best_score = curr_score
+                                best_id_emb = curr_emb
+                                bbox = id_faces[0].bbox.astype(int)
+                                x1, y1, x2, y2 = max(0, bbox[0]), max(0, bbox[1]), min(rotated_id.shape[1], bbox[2]), min(rotated_id.shape[0], bbox[3])
+                                best_id_face_crop = rotated_id[y1:y2, x1:x2]
+                                
+                                if best_score >= 0.60:
+                                    break
+                                    
+                    if best_id_emb is not None:
+                        if best_id_face_crop is not None:
+                            os.makedirs("uploads", exist_ok=True)
+                            id_face_path = os.path.join("uploads", f"face_id_{id_name}")
+                            cv2.imwrite(id_face_path, best_id_face_crop)
+                            
+                        if video_embs:
+                            score = max(0.0, min(1.0, best_score))
                             decision = "MATCH" if score >= 0.45 else "MISMATCH"
                             return round(score, 3), decision, id_face_path, live_face_path
         except Exception as e:
@@ -595,45 +622,76 @@ def compute_face_similarity(id_image_path: Optional[str], video_path: str, frame
             if os.path.exists(id_image_path):
                 id_img = cv2.imread(id_image_path)
                 if id_img is not None:
+                    # 1. Extract live face embeddings from video first
+                    if not frames:
+                        frames = extract_frames(video_path, num_frames=5)
+                        
+                    video_embs = []
+                    saved_live_face = False
+                    facenet_frames = frames
+                    if len(frames) > 3:
+                        indices = np.linspace(0, len(frames) - 1, 3, dtype=int)
+                        facenet_frames = [frames[i] for i in indices]
+                    for frame in facenet_frames:
+                        vid_face = align_face(frame)
+                        if vid_face is not None:
+                            if not saved_live_face:
+                                live_face_path = os.path.join("uploads", f"face_live_{os.path.basename(video_path)}.png")
+                                cv2.imwrite(live_face_path, cv2.cvtColor(vid_face, cv2.COLOR_RGB2BGR))
+                                saved_live_face = True
+                            try:
+                                vid_emb = get_face_embedding(vid_face, model, device)
+                                video_embs.append(vid_emb)
+                            except Exception:
+                                pass
+                                
+                    # 2. Try rotations of the ID image
+                    best_score = -1.0
+                    best_id_emb = None
+                    best_id_face = None
+                    
+                    rotations = [
+                        (None, "0"),
+                        (cv2.ROTATE_90_CLOCKWISE, "90_CW"),
+                        (cv2.ROTATE_180, "180"),
+                        (cv2.ROTATE_90_COUNTERCLOCKWISE, "90_CCW")
+                    ]
+                    
                     id_img_rgb = cv2.cvtColor(id_img, cv2.COLOR_BGR2RGB)
-                    id_face = align_face(id_img_rgb)
-                    if id_face is not None:
-                        # Save ID face crop
-                        os.makedirs("uploads", exist_ok=True)
-                        id_face_path = os.path.join("uploads", f"face_id_{id_name}")
-                        cv2.imwrite(id_face_path, cv2.cvtColor(id_face, cv2.COLOR_RGB2BGR))
-
-                        id_emb = get_face_embedding(id_face, model, device)
-                        
-                        if not frames:
-                            frames = extract_frames(video_path, num_frames=5)
-                        
-                        video_embs = []
-                        saved_live_face = False
-                        # Downsample frames to max 3 frames for faster CPU/non-GPU similarity extraction
-                        facenet_frames = frames
-                        if len(frames) > 3:
-                            indices = np.linspace(0, len(frames) - 1, 3, dtype=int)
-                            facenet_frames = [frames[i] for i in indices]
-                        for frame in facenet_frames:
-                            vid_face = align_face(frame)
-                            if vid_face is not None:
-                                # Save first valid live face crop
-                                if not saved_live_face:
-                                    live_face_path = os.path.join("uploads", f"face_live_{os.path.basename(video_path)}.png")
-                                    cv2.imwrite(live_face_path, cv2.cvtColor(vid_face, cv2.COLOR_RGB2BGR))
-                                    saved_live_face = True
-
-                                try:
-                                    vid_emb = get_face_embedding(vid_face, model, device)
-                                    video_embs.append(vid_emb)
-                                except Exception:
-                                    pass
-                        
+                    for rot_code, rot_name in rotations:
+                        if rot_code is None:
+                            rotated_id = id_img_rgb.copy()
+                        else:
+                            rotated_id = cv2.rotate(id_img_rgb, rot_code)
+                            
+                        id_face = align_face(rotated_id)
+                        if id_face is not None:
+                            try:
+                                curr_emb = get_face_embedding(id_face, model, device)
+                                if video_embs:
+                                    sims = [cosine_similarity(curr_emb, v_emb) for v_emb in video_embs]
+                                    curr_score = float(np.mean(sims))
+                                else:
+                                    curr_score = 0.5
+                                    
+                                if curr_score > best_score:
+                                    best_score = curr_score
+                                    best_id_emb = curr_emb
+                                    best_id_face = id_face
+                                    
+                                    if best_score >= 0.70:
+                                        break
+                            except Exception:
+                                pass
+                                
+                    if best_id_emb is not None:
+                        if best_id_face is not None:
+                            os.makedirs("uploads", exist_ok=True)
+                            id_face_path = os.path.join("uploads", f"face_id_{id_name}")
+                            cv2.imwrite(id_face_path, cv2.cvtColor(best_id_face, cv2.COLOR_RGB2BGR))
+                            
                         if video_embs:
-                            sims = [cosine_similarity(id_emb, v_emb) for v_emb in video_embs]
-                            score = float(np.mean(sims))
-                            score = max(0.0, min(1.0, score))
+                            score = max(0.0, min(1.0, best_score))
                             decision = "MATCH" if score >= 0.60 else "MISMATCH"
                             return round(score, 3), decision, id_face_path, live_face_path
         except Exception as e:
@@ -648,63 +706,121 @@ def compute_face_similarity(id_image_path: Optional[str], video_path: str, frame
                 cascade_path = os.path.join(cv2.data.haarcascades, 'haarcascade_frontalface_default.xml')
                 face_cascade = cv2.CascadeClassifier(cascade_path)
                 
-                id_faces = face_cascade.detectMultiScale(id_gray, 1.1, 4)
-                if len(id_faces) > 0:
-                    x, y, w, h = sorted(id_faces, key=lambda f: f[2]*f[3], reverse=True)[0]
-                    id_face_crop = id_img[y:y+h, x:x+w]
-                else:
-                    ih, iw = id_gray.shape
-                    id_face_crop = id_img[int(ih*0.15):int(ih*0.85), int(iw*0.5):int(iw*0.95)]
+                # Check different rotations for template matching fallback as well
+                best_score = -1.0
+                best_id_face_crop = None
                 
-                # Save ID face crop
-                if id_face_crop is not None:
+                rotations = [
+                    (None, "0"),
+                    (cv2.ROTATE_90_CLOCKWISE, "90_CW"),
+                    (cv2.ROTATE_180, "180"),
+                    (cv2.ROTATE_90_COUNTERCLOCKWISE, "90_CCW")
+                ]
+                
+                for rot_code, rot_name in rotations:
+                    if rot_code is None:
+                        rotated_gray = id_gray.copy()
+                        rotated_color = id_img.copy()
+                    else:
+                        rotated_gray = cv2.rotate(id_gray, rot_code)
+                        rotated_color = cv2.rotate(id_img, rot_code)
+                        
+                    id_faces = face_cascade.detectMultiScale(rotated_gray, 1.1, 4)
+                    if len(id_faces) > 0:
+                        x, y, w, h = sorted(id_faces, key=lambda f: f[2]*f[3], reverse=True)[0]
+                        curr_crop = rotated_color[y:y+h, x:x+w]
+                    else:
+                        ih, iw = rotated_gray.shape
+                        curr_crop = rotated_color[int(ih*0.15):int(ih*0.85), int(iw*0.5):int(iw*0.95)]
+                        
+                    # Evaluate crop against live frame
+                    frame_img = None
+                    if frames and len(frames) > 0:
+                        frame_img = frames[0]
+                    else:
+                        cap = cv2.VideoCapture(video_path)
+                        ret, frame_img = cap.read()
+                        cap.release()
+                        
+                    if frame_img is not None and curr_crop is not None:
+                        frame_gray = cv2.cvtColor(frame_img, cv2.COLOR_BGR2GRAY)
+                        vid_faces = face_cascade.detectMultiScale(frame_gray, 1.1, 4)
+                        if len(vid_faces) > 0:
+                            vx, vy, vw, vh = sorted(vid_faces, key=lambda f: f[2]*f[3], reverse=True)[0]
+                            vid_crop = frame_img[vy:vy+vh, vx:vx+vw]
+                        else:
+                            vvh, vvw = frame_gray.shape
+                            vid_crop = frame_img[int(vvh*0.2):int(vvh*0.8), int(vvw*0.2):int(vvw*0.8)]
+                            
+                        if vid_crop is not None:
+                            id_resized = cv2.resize(cv2.cvtColor(curr_crop, cv2.COLOR_BGR2GRAY), (128, 128))
+                            vid_resized = cv2.resize(cv2.cvtColor(vid_crop, cv2.COLOR_BGR2GRAY), (128, 128))
+                            res = cv2.matchTemplate(id_resized, vid_resized, cv2.TM_CCOEFF_NORMED)
+                            _, max_val, _, _ = cv2.minMaxLoc(res)
+                            
+                            hist_id = cv2.calcHist([id_resized], [0], None, [256], [0, 256])
+                            hist_vid = cv2.calcHist([vid_resized], [0], None, [256], [0, 256])
+                            cv2.normalize(hist_id, hist_id, 0, 1, cv2.NORM_MINMAX)
+                            cv2.normalize(hist_vid, hist_vid, 0, 1, cv2.NORM_MINMAX)
+                            hist_corr = cv2.compareHist(hist_id, hist_vid, cv2.HISTCMP_CORREL)
+                            
+                            curr_score = (max(0.0, max_val) * 0.6) + (max(0.0, hist_corr) * 0.4)
+                            if curr_score > best_score:
+                                best_score = curr_score
+                                best_id_face_crop = curr_crop
+                                if live_face_path is None:
+                                    live_face_path = os.path.join("uploads", f"face_live_{os.path.basename(video_path)}.png")
+                                    cv2.imwrite(live_face_path, vid_crop)
+                                    
+                if best_id_face_crop is not None:
                     os.makedirs("uploads", exist_ok=True)
                     id_face_path = os.path.join("uploads", f"face_id_{id_name}")
-                    cv2.imwrite(id_face_path, id_face_crop)
-
-                frame_img = None
-                if frames and len(frames) > 0:
-                    frame_img = frames[0]
-                else:
-                    cap = cv2.VideoCapture(video_path)
-                    ret, frame_img = cap.read()
-                    cap.release()
+                    cv2.imwrite(id_face_path, best_id_face_crop)
                     
-                if frame_img is not None:
-                    frame_gray = cv2.cvtColor(frame_img, cv2.COLOR_BGR2GRAY)
-                    vid_faces = face_cascade.detectMultiScale(frame_gray, 1.1, 4)
-                    if len(vid_faces) > 0:
-                        x, y, w, h = sorted(vid_faces, key=lambda f: f[2]*f[3], reverse=True)[0]
-                        vid_face_crop = frame_img[y:y+h, x:x+w]
-                    else:
-                        vh, vw = frame_gray.shape
-                        vid_face_crop = frame_img[int(vh*0.2):int(vh*0.8), int(vw*0.2):int(vw*0.8)]
-                    
-                    # Save Live face crop
-                    if vid_face_crop is not None:
-                        live_face_path = os.path.join("uploads", f"face_live_{os.path.basename(video_path)}.png")
-                        cv2.imwrite(live_face_path, vid_face_crop)
-
-                    if id_face_crop is not None and vid_face_crop is not None:
-                        id_resized = cv2.resize(cv2.cvtColor(id_face_crop, cv2.COLOR_BGR2GRAY), (128, 128))
-                        vid_resized = cv2.resize(cv2.cvtColor(vid_face_crop, cv2.COLOR_BGR2GRAY), (128, 128))
-                        
-                        res = cv2.matchTemplate(id_resized, vid_resized, cv2.TM_CCOEFF_NORMED)
-                        _, max_val, _, _ = cv2.minMaxLoc(res)
-                        
-                        hist_id = cv2.calcHist([id_resized], [0], None, [256], [0, 256])
-                        hist_vid = cv2.calcHist([vid_resized], [0], None, [256], [0, 256])
-                        cv2.normalize(hist_id, hist_id, 0, 1, cv2.NORM_MINMAX)
-                        cv2.normalize(hist_vid, hist_vid, 0, 1, cv2.NORM_MINMAX)
-                        hist_corr = cv2.compareHist(hist_id, hist_vid, cv2.HISTCMP_CORREL)
-                        
-                        score = (max(0.0, max_val) * 0.6) + (max(0.0, hist_corr) * 0.4)
-                        decision = "MATCH" if score >= 0.60 else "MISMATCH"
-                        return round(float(score), 3), decision, id_face_path, live_face_path
+                score = max(0.0, min(1.0, best_score))
+                decision = "MATCH" if score >= 0.60 else "MISMATCH"
+                return round(float(score), 3), decision, id_face_path, live_face_path
         except Exception:
             pass
 
     return 0.95, "MATCH", id_face_path, live_face_path
+
+def crop_face_for_liveness(frame: np.ndarray, arcface_app=None) -> np.ndarray:
+    """
+    Crops the face region from the frame for liveness classification.
+    Uses InsightFace if available, falling back to Haar cascades, and finally the full frame.
+    """
+    if not OPENCV_AVAILABLE:
+        return frame
+
+    # Try InsightFace (BGR input)
+    if INSIGHTFACE_AVAILABLE and arcface_app is not None:
+        try:
+            # frame is RGB, convert to BGR for InsightFace
+            frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            faces = arcface_app.get(frame_bgr)
+            if len(faces) > 0:
+                faces = sorted(faces, key=lambda x: (x.bbox[2]-x.bbox[0]) * (x.bbox[3]-x.bbox[1]), reverse=True)
+                bbox = faces[0].bbox.astype(int)
+                x1, y1, x2, y2 = max(0, bbox[0]), max(0, bbox[1]), min(frame.shape[1], bbox[2]), min(frame.shape[0], bbox[3])
+                if (x2 - x1) > 10 and (y2 - y1) > 10:
+                    return frame[y1:y2, x1:x2]
+        except Exception:
+            pass
+
+    # Fallback to Haar Cascade / OpenCV face crop
+    try:
+        gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+        face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        faces = face_cascade.detectMultiScale(gray, 1.1, 4)
+        if len(faces) > 0:
+            x, y, w, h = sorted(faces, key=lambda f: f[2]*f[3], reverse=True)[0]
+            if w > 10 and h > 10:
+                return frame[y:y+h, x:x+w]
+    except Exception:
+        pass
+
+    return frame
 
 def verify_liveness(
     video_path: str,
@@ -1038,9 +1154,11 @@ def verify_liveness(
         ])
 
         spoof_probs = []
+        arcface_app = get_cached_arcface()
         with torch.no_grad():
             for frame in frames:
-                img_tensor = transform(frame).unsqueeze(0).to(device)
+                cropped = crop_face_for_liveness(frame, arcface_app)
+                img_tensor = transform(cropped).unsqueeze(0).to(device)
                 outputs = model(img_tensor)
                 probs = torch.softmax(outputs, dim=1)
                 # Class 0: Real, Class 1: Spoof

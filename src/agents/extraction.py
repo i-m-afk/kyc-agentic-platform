@@ -206,11 +206,46 @@ def align_id_card(image_path: str) -> str:
             else:
                 aligned = img
 
-        # If the image is vertical (height > width), rotate it 90 degrees clockwise to make it landscape
+        # Ensure card is landscape if it is vertical (height > width)
         ah, aw = aligned.shape[:2]
         if ah > aw:
             aligned = cv2.rotate(aligned, cv2.ROTATE_90_CLOCKWISE)
-            print("Rotated card by 90 degrees to landscape orientation.")
+            print("Initial rotation: Rotated card by 90 degrees to landscape orientation.")
+
+        # Run face-cascade based rotation correction to make sure it is right-side up
+        try:
+            gray = cv2.cvtColor(aligned, cv2.COLOR_BGR2GRAY)
+            face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+            
+            rotations = [
+                (None, 0),
+                (cv2.ROTATE_90_CLOCKWISE, 90),
+                (cv2.ROTATE_180, 180),
+                (cv2.ROTATE_90_COUNTERCLOCKWISE, 270)
+            ]
+            
+            best_rot = None
+            max_area = 0
+            
+            for rot_code, angle in rotations:
+                if rot_code is None:
+                    rotated = gray
+                else:
+                    rotated = cv2.rotate(gray, rot_code)
+                    
+                faces = face_cascade.detectMultiScale(rotated, 1.1, 3)
+                if len(faces) > 0:
+                    x, y, w, h = sorted(faces, key=lambda f: f[2]*f[3], reverse=True)[0]
+                    area = w * h
+                    if area > max_area:
+                        max_area = area
+                        best_rot = rot_code
+                        
+            if best_rot is not None:
+                aligned = cv2.rotate(aligned, best_rot)
+                print("Corrected orientation: Rotated card to keep face upright.")
+        except Exception as rot_err:
+            print(f"Cascade-based rotation rectification failed: {rot_err}")
 
         # Ensure uploads directory exists
         os.makedirs("uploads", exist_ok=True)

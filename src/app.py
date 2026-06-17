@@ -300,6 +300,8 @@ if st.session_state.selected_app_id:
         
         class UIStatusUpdater:
             def __init__(self):
+                from streamlit.runtime.scriptrunner import get_script_run_ctx
+                self.ctx = get_script_run_ctx()
                 self.lock = threading.Lock()
                 self.tasks = {
                     "align": {"name": "ID Card Alignment", "status": "Pending", "est": "0.5s", "detail": ""},
@@ -311,6 +313,9 @@ if st.session_state.selected_app_id:
                 self.render()
 
             def update(self, task_key, status, detail=""):
+                if self.ctx:
+                    from streamlit.runtime.scriptrunner import add_script_run_ctx
+                    add_script_run_ctx(ctx=self.ctx)
                 with self.lock:
                     if task_key in self.tasks:
                         self.tasks[task_key]["status"] = status

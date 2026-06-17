@@ -240,6 +240,9 @@ def align_id_card(image_path: str) -> str:
                     if area > max_area:
                         max_area = area
                         best_rot = rot_code
+                    
+                    if rot_code is None:
+                        break
                         
             if best_rot is not None:
                 aligned = cv2.rotate(aligned, best_rot)

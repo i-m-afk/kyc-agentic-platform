@@ -606,6 +606,10 @@ def compute_face_similarity(id_image_path: Optional[str], video_path: str, frame
                                 if best_score >= 0.60:
                                     break
                                     
+                            # Short-circuit: if we found a face at 0-degree, skip testing other rotations
+                            if rot_code is None:
+                                break
+                                    
                     if best_id_emb is not None:
                         if best_id_face_crop is not None:
                             os.makedirs("uploads", exist_ok=True)
@@ -687,6 +691,10 @@ def compute_face_similarity(id_image_path: Optional[str], video_path: str, frame
                                     
                                     if best_score >= 0.70:
                                         break
+                                
+                                # Short-circuit: if we found a face at 0-degree, skip testing other rotations
+                                if rot_code is None:
+                                    break
                             except Exception:
                                 pass
                                 
@@ -772,11 +780,16 @@ def compute_face_similarity(id_image_path: Optional[str], video_path: str, frame
                             
                             curr_score = (max(0.0, max_val) * 0.6) + (max(0.0, hist_corr) * 0.4)
                             if curr_score > best_score:
+                                civ_path = os.path.basename(video_path)
                                 best_score = curr_score
                                 best_id_face_crop = curr_crop
                                 if live_face_path is None:
-                                    live_face_path = os.path.join("uploads", f"face_live_{os.path.basename(video_path)}.png")
+                                    live_face_path = os.path.join("uploads", f"face_live_{civ_path}.png")
                                     cv2.imwrite(live_face_path, vid_crop)
+                                    
+                    # Short-circuit if a face was detected at 0-degree
+                    if len(id_faces) > 0 and rot_code is None:
+                        break
                                     
                 if best_id_face_crop is not None:
                     os.makedirs("uploads", exist_ok=True)
@@ -793,40 +806,59 @@ def compute_face_similarity(id_image_path: Optional[str], video_path: str, frame
 
 def crop_face_for_liveness(frame: np.ndarray, arcface_app=None) -> np.ndarray:
     """
-    Crops the face region from the frame for liveness classification.
-    Uses InsightFace if available, falling back to Haar cascades, and finally the full frame.
+    Crops the face region from a single frame.
     """
-    if not OPENCV_AVAILABLE:
-        return frame
+    res = crop_face_frames_for_liveness([frame], arcface_app)
+    return res[0] if res else frame
 
-    # Try InsightFace (BGR input)
-    if INSIGHTFACE_AVAILABLE and arcface_app is not None:
-        try:
-            # frame is RGB, convert to BGR for InsightFace
-            frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-            faces = arcface_app.get(frame_bgr)
-            if len(faces) > 0:
-                faces = sorted(faces, key=lambda x: (x.bbox[2]-x.bbox[0]) * (x.bbox[3]-x.bbox[1]), reverse=True)
-                bbox = faces[0].bbox.astype(int)
-                x1, y1, x2, y2 = max(0, bbox[0]), max(0, bbox[1]), min(frame.shape[1], bbox[2]), min(frame.shape[0], bbox[3])
-                if (x2 - x1) > 10 and (y2 - y1) > 10:
-                    return frame[y1:y2, x1:x2]
-        except Exception:
-            pass
+def crop_face_frames_for_liveness(frames: list, arcface_app=None) -> list:
+    """
+    Finds the face bounding box from the first frame, and crops all frames using the same bounding box.
+    This avoids running the expensive face detection model on every single frame.
+    """
+    if not frames:
+        return frames
 
-    # Fallback to Haar Cascade / OpenCV face crop
-    try:
-        gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
-        face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-        faces = face_cascade.detectMultiScale(gray, 1.1, 4)
-        if len(faces) > 0:
-            x, y, w, h = sorted(faces, key=lambda f: f[2]*f[3], reverse=True)[0]
-            if w > 10 and h > 10:
-                return frame[y:y+h, x:x+w]
-    except Exception:
-        pass
+    first_frame = frames[0]
+    bbox = None
 
-    return frame
+    if OPENCV_AVAILABLE:
+        # Try InsightFace on the first frame
+        if INSIGHTFACE_AVAILABLE and arcface_app is not None:
+            try:
+                frame_bgr = cv2.cvtColor(first_frame, cv2.COLOR_RGB2BGR)
+                faces = arcface_app.get(frame_bgr)
+                if len(faces) > 0:
+                    faces = sorted(faces, key=lambda x: (x.bbox[2]-x.bbox[0]) * (x.bbox[3]-x.bbox[1]), reverse=True)
+                    bbox_coords = faces[0].bbox.astype(int)
+                    x1, y1, x2, y2 = max(0, bbox_coords[0]), max(0, bbox_coords[1]), min(first_frame.shape[1], bbox_coords[2]), min(first_frame.shape[0], bbox_coords[3])
+                    if (x2 - x1) > 10 and (y2 - y1) > 10:
+                        bbox = (x1, y1, x2, y2)
+            except Exception:
+                pass
+
+        # Fallback to Haar Cascade on the first frame if InsightFace failed
+        if bbox is None:
+            try:
+                gray = cv2.cvtColor(first_frame, cv2.COLOR_RGB2GRAY)
+                face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+                faces = face_cascade.detectMultiScale(gray, 1.1, 4)
+                if len(faces) > 0:
+                    x, y, w, h = sorted(faces, key=lambda f: f[2]*f[3], reverse=True)[0]
+                    if w > 10 and h > 10:
+                        bbox = (x, y, x + w, y + h)
+            except Exception:
+                pass
+
+    cropped_frames = []
+    for frame in frames:
+        if bbox is not None:
+            x1, y1, x2, y2 = bbox
+            cropped_frames.append(frame[y1:y2, x1:x2])
+        else:
+            cropped_frames.append(frame)
+
+    return cropped_frames
 
 def verify_liveness(
     video_path: str,
@@ -1161,9 +1193,9 @@ def verify_liveness(
 
         spoof_probs = []
         arcface_app = get_cached_arcface()
+        cropped_frames = crop_face_frames_for_liveness(frames, arcface_app)
         with torch.no_grad():
-            for frame in frames:
-                cropped = crop_face_for_liveness(frame, arcface_app)
+            for cropped in cropped_frames:
                 img_tensor = transform(cropped).unsqueeze(0).to(device)
                 outputs = model(img_tensor)
                 probs = torch.softmax(outputs, dim=1)

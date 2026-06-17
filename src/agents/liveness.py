@@ -689,13 +689,16 @@ def verify_liveness(
     video_path: str,
     expected_gesture: Optional[str] = None,
     id_image_path: Optional[str] = None,
-    use_minifasnet: bool = False
+    use_minifasnet: bool = False,
+    status_callback: Optional[object] = None
 ) -> LivenessResult:
     """
     Performs hybrid liveness check on face video.
     Detects physical spoofing, validates dynamic gestures, and flags digital deepfakes.
     Also compares face similarity to the ID image.
     """
+    if status_callback:
+        status_callback("liveness", "Running", "Starting liveness analysis & computing face similarity...")
     # 1. Compute face similarity
     similarity_score, face_match_decision, id_face_path, live_face_path = compute_face_similarity(id_image_path, video_path)
 
@@ -910,6 +913,8 @@ def verify_liveness(
         raise FileNotFoundError(f"Liveness video file not found at {video_path}")
 
     # Extract frames for CV calculations
+    if status_callback:
+        status_callback("liveness", "Running", "Extracting 20 video frames for verification...")
     try:
         frames = extract_frames(video_path, num_frames=20)
     except Exception as e:
@@ -932,6 +937,8 @@ def verify_liveness(
     max_detected_occlusion = 0.0
 
     if OPENCV_AVAILABLE and expected_gesture:
+        if status_callback:
+            status_callback("liveness", "Running", f"Running batch finger counting for gesture '{expected_gesture}' (3-finger test)...")
         print(f"Liveness Agent: Running batch finger and occlusion estimation on {len(frames)} frames for gesture '{expected_gesture}'...")
         try:
             finger_counts, occlusion_ratios = estimate_fingers(frames)
@@ -964,9 +971,13 @@ def verify_liveness(
         frames = [gesture_frame] + [f for i, f in enumerate(frames) if i != gesture_frame_index]
 
     # Compute actual face similarity on extracted frames
+    if status_callback:
+        status_callback("liveness", "Running", "Performing biometric face comparison via ArcFace/RetinaFace...")
     similarity_score, face_match_decision, id_face_path, live_face_path = compute_face_similarity(id_image_path, video_path, frames)
 
     # Compute actual mathematical checks on the extracted frames
+    if status_callback:
+        status_callback("liveness", "Running", "Analyzing FFT frequency grid & rPPG cardiac pulse...")
     fft_grid, fft_metrics = compute_fft_metrics(frames)
     rppg_pulse, rppg_signal = compute_rppg_metrics(frames)
     flow_mismatch, flow_metrics = compute_optical_flow_metrics(frames)
@@ -1057,6 +1068,9 @@ def verify_liveness(
         "optical_flow_var": float(flow_metrics.get("variance", 0.12)),
         "gesture_occlusion_ratio": float(max_detected_occlusion)
     }
+
+    if status_callback:
+        status_callback("liveness", "Completed")
 
     return LivenessResult(
         liveness_status=status,

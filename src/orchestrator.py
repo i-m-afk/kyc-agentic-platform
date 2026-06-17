@@ -19,7 +19,8 @@ def run_kyc_pipeline(
     liveness_video_path: str,
     expected_gesture: Optional[str] = None,
     applicant_name: Optional[str] = None,
-    use_minifasnet: bool = False
+    use_minifasnet: bool = False,
+    status_callback: Optional[object] = None
 ) -> Tuple[ExtractionResult, LivenessResult, ScreeningResult, ConsolidatedRiskReport]:
     """
     Coordinates the KYC processing pipeline:
@@ -31,18 +32,26 @@ def run_kyc_pipeline(
     audit_log = {}
     
     # 0. Align ID card first so both agents work on the same oriented image
+    if status_callback:
+        status_callback("align", "Running", "Detecting corners and applying perspective warp alignment...")
     try:
         aligned_id_image_path = align_id_card(id_image_path)
     except Exception as e:
         print(f"Orchestrator: Alignment failed, falling back to raw image. Error: {e}")
         aligned_id_image_path = id_image_path
+    if status_callback:
+        status_callback("align", "Completed")
 
     # 1. Run parallel steps
     start_parallel = time.time()
     
+    if status_callback:
+        status_callback("extraction", "Running", "Initializing Extraction Agent task...")
+        status_callback("liveness", "Running", "Initializing Liveness Agent task...")
+        
     with ThreadPoolExecutor(max_workers=2) as executor:
-        extraction_future = executor.submit(extract_document_info, aligned_id_image_path)
-        liveness_future = executor.submit(verify_liveness, liveness_video_path, expected_gesture, aligned_id_image_path, use_minifasnet)
+        extraction_future = executor.submit(extract_document_info, aligned_id_image_path, status_callback)
+        liveness_future = executor.submit(verify_liveness, liveness_video_path, expected_gesture, aligned_id_image_path, use_minifasnet, status_callback)
         
         try:
             extraction_res = extraction_future.result()
@@ -54,11 +63,15 @@ def run_kyc_pipeline(
                 "qwen2-vl" if not get_mock_ml_flag() else "mock_vision_rules",
                 {"image_path": id_image_path}
             )
+            if status_callback:
+                status_callback("extraction", "Completed")
         except Exception as e:
             extraction_latency = time.time() - start_parallel
             audit_log["ExtractionAgent"] = create_audit_entry(
                 "ExtractionAgent", "FAILED", extraction_latency, "unknown", {"error": str(e)}
             )
+            if status_callback:
+                status_callback("extraction", f"Failed: {str(e)}")
             raise e
             
         try:
@@ -71,15 +84,21 @@ def run_kyc_pipeline(
                 "mobilenet_v3_small" if not get_mock_ml_flag() else "mock_liveness_rules",
                 {"video_path": liveness_video_path}
             )
+            if status_callback:
+                status_callback("liveness", "Completed")
         except Exception as e:
             liveness_latency = time.time() - start_parallel
             audit_log["LivenessAgent"] = create_audit_entry(
                 "LivenessAgent", "FAILED", liveness_latency, "unknown", {"error": str(e)}
             )
+            if status_callback:
+                status_callback("liveness", f"Failed: {str(e)}")
             raise e
 
     # 2. Watchlist & Media Screening (depends on extracted name)
     start_screening = time.time()
+    if status_callback:
+        status_callback("screening", "Running", "Matching extracted name against global watchlists...")
     try:
         screening_res = screen_identity(extraction_res, applicant_name)
         screening_latency = time.time() - start_screening
@@ -90,15 +109,21 @@ def run_kyc_pipeline(
             "mock_database_matcher",
             {"query_extracted_name": extraction_res.name, "query_submitted_name": applicant_name}
         )
+        if status_callback:
+            status_callback("screening", "Completed")
     except Exception as e:
         screening_latency = time.time() - start_screening
         audit_log["ScreenerAgent"] = create_audit_entry(
             "ScreenerAgent", "FAILED", screening_latency, "unknown", {"error": str(e)}
         )
+        if status_callback:
+            status_callback("screening", f"Failed: {str(e)}")
         raise e
 
     # 3. Risk Coordination
     start_coordinator = time.time()
+    if status_callback:
+        status_callback("coordinator", "Running", "Synthesizing agent results & running VLM consensus analysis...")
     try:
         risk_report = coordinate_risk(
             extraction=extraction_res,
@@ -119,11 +144,15 @@ def run_kyc_pipeline(
             {}
         )
         risk_report.agent_audit_log = audit_log
+        if status_callback:
+            status_callback("coordinator", "Completed")
     except Exception as e:
         coordinator_latency = time.time() - start_coordinator
         audit_log["RiskCoordinatorAgent"] = create_audit_entry(
             "RiskCoordinatorAgent", "FAILED", coordinator_latency, "unknown", {"error": str(e)}
         )
+        if status_callback:
+            status_callback("coordinator", f"Failed: {str(e)}")
         raise e
 
     return extraction_res, liveness_res, screening_res, risk_report

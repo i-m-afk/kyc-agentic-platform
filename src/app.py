@@ -294,25 +294,84 @@ if st.session_state.selected_app_id:
 
     # Execution trigger
     if run_btn:
-        with st.spinner("Executing stateless multi-agent pipeline in parallel..."):
-            try:
-                ext_res, live_res, screen_res, risk_res = run_kyc_pipeline(
-                    app["id_image"],
-                    app["video"],
-                    app.get("expected_gesture", "2_fingers_near_eye"),
-                    app["name"],
-                    use_minifasnet=st.session_state.get("use_minifasnet_cb", False)
-                )
-                app["pipeline_run"] = {
-                    "extraction": ext_res,
-                    "liveness": live_res,
-                    "screening": screen_res,
-                    "risk": risk_res
+        import threading
+        
+        status_placeholder = st.empty()
+        
+        class UIStatusUpdater:
+            def __init__(self):
+                self.lock = threading.Lock()
+                self.tasks = {
+                    "align": {"name": "ID Card Alignment", "status": "Pending", "est": "0.5s", "detail": ""},
+                    "extraction": {"name": "Extraction Agent (OCR & Authenticity)", "status": "Pending", "est": "20.0s", "detail": ""},
+                    "liveness": {"name": "Liveness Agent (Physical, Gestures & SOTA Similarity)", "status": "Pending", "est": "15.0s", "detail": ""},
+                    "screening": {"name": "Screener Agent (Watchlist check)", "status": "Pending", "est": "0.5s", "detail": ""},
+                    "coordinator": {"name": "Risk Coordinator Agent (VLM Consensus)", "status": "Pending", "est": "8.0s", "detail": ""},
                 }
-                st.success("Stateless multi-agent pipeline execution completed successfully!")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Pipeline execution failed: {str(e)}")
+                self.render()
+
+            def update(self, task_key, status, detail=""):
+                with self.lock:
+                    if task_key in self.tasks:
+                        self.tasks[task_key]["status"] = status
+                        if detail:
+                            self.tasks[task_key]["detail"] = detail
+                    self.render()
+
+            def render(self):
+                lines = []
+                lines.append("<h4 style='margin-top: 0; margin-bottom: 1rem; color: #4f46e5; font-size: 1.1rem;'>⚙️ KYC Pipeline Task Execution Tracker</h4>")
+                for key, task in self.tasks.items():
+                    name = task["name"]
+                    status = task["status"]
+                    est = task["est"]
+                    detail = task["detail"]
+                    
+                    if status == "Pending":
+                        icon = "⚪"
+                        badge = f"<span style='color: #6b7280; font-size: 0.85rem;'>Pending (Est: {est})</span>"
+                    elif status == "Running":
+                        icon = "⏳"
+                        badge = f"<span style='color: #3b82f6; font-weight: bold; font-size: 0.85rem;'>Running... (Est: {est})</span>"
+                    elif status == "Completed":
+                        icon = "✅"
+                        badge = "<span style='color: #10b981; font-weight: bold; font-size: 0.85rem;'>Completed</span>"
+                    else:
+                        icon = "❌"
+                        badge = f"<span style='color: #ef4444; font-weight: bold; font-size: 0.85rem;'>Failed: {status}</span>"
+                    
+                    detail_str = f"<br/><span style='color: #4b5563; font-size: 0.8rem; margin-left: 1.5rem;'>└─ {detail}</span>" if detail and status == "Running" else ""
+                    lines.append(f"<div style='margin-bottom: 0.6rem; line-height: 1.4;'>{icon} <b>{name}</b> — {badge}{detail_str}</div>")
+                
+                html_content = f"""
+                <div style="background-color: rgba(255, 255, 255, 0.05); border: 1px solid rgba(128, 128, 128, 0.2); border-radius: 8px; padding: 1.2rem; margin-bottom: 1.5rem;">
+                    {"".join(lines)}
+                </div>
+                """
+                status_placeholder.markdown(html_content, unsafe_allow_html=True)
+
+        updater = UIStatusUpdater()
+        
+        try:
+            ext_res, live_res, screen_res, risk_res = run_kyc_pipeline(
+                app["id_image"],
+                app["video"],
+                app.get("expected_gesture", "2_fingers_near_eye"),
+                app["name"],
+                use_minifasnet=st.session_state.get("use_minifasnet_cb", False),
+                status_callback=updater.update
+            )
+            app["pipeline_run"] = {
+                "extraction": ext_res,
+                "liveness": live_res,
+                "screening": screen_res,
+                "risk": risk_res
+            }
+            status_placeholder.empty()
+            st.success("Stateless multi-agent pipeline execution completed successfully!")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Pipeline execution failed: {str(e)}")
 
     # Display results
     if app["pipeline_run"]:

@@ -227,17 +227,21 @@ def align_id_card(image_path: str) -> str:
         return image_path
 
 
-def extract_document_info(image_path: str) -> ExtractionResult:
+def extract_document_info(image_path: str, status_callback: Optional[object] = None) -> ExtractionResult:
     """
     Extracts key details (Name, DOB, ID number) from the uploaded ID card image.
     Uses local Mock mode or vLLM vision model inference.
     """
+    if status_callback:
+        status_callback("extraction", "Running", "Extracting ID card text & verifying hologram crests via VLM...")
     if os.path.basename(image_path).startswith("aligned_"):
         aligned_path = image_path
     else:
         aligned_path = align_id_card(image_path)
     res = _extract_document_info_raw(aligned_path)
     res.aligned_id_image_path = aligned_path
+    if status_callback:
+        status_callback("extraction", "Completed")
     return res
 
 

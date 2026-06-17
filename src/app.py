@@ -372,6 +372,7 @@ if st.session_state.selected_app_id:
             st.rerun()
         except Exception as e:
             st.error(f"Pipeline execution failed: {str(e)}")
+            st.exception(e)
 
     # Display results
     if app["pipeline_run"]:
